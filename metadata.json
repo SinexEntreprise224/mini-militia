@@ -1,0 +1,6 @@
+{
+  "name": "SKYBREAK",
+  "description": "Fast-paced 2.5D stylized 3D jetpack arena shooter with local 2-player dynamic split-screen, intelligent bots, 6 original maps, weapon-dependent camera zoom, and full Xbox controller support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
