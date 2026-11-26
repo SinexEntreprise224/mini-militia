@@ -3,9 +3,10 @@ import { MatchSnapshot } from '../game/types';
 
 export const PauseModal: React.FC<{
   onResume: () => void;
+  onControls: () => void;
   onSettings: () => void;
   onLeave: () => void;
-}> = ({ onResume, onSettings, onLeave }) => (
+}> = ({ onResume, onControls, onSettings, onLeave }) => (
   <div className="fixed inset-0 z-50 bg-slate-950/88 flex items-center justify-center p-4">
     <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-3 text-center shadow-2xl">
       <h2 className="text-xl font-black tracking-widest text-white mb-4">MATCH PAUSED</h2>
@@ -16,10 +17,16 @@ export const PauseModal: React.FC<{
         RESUME [A / ESC]
       </button>
       <button
+        onClick={onControls}
+        className="w-full py-2.5 rounded-xl bg-amber-400/95 hover:bg-amber-300 text-slate-950 font-black text-sm cursor-pointer"
+      >
+        CONTROLS &amp; THUMBSTICK GUIDE
+      </button>
+      <button
         onClick={onSettings}
         className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold text-sm border border-slate-700 cursor-pointer"
       >
-        SETTINGS & CONTROLS
+        SETTINGS &amp; SENSITIVITY
       </button>
       <button
         onClick={onLeave}
@@ -141,14 +148,14 @@ export const CreditsModal: React.FC<{ onClose: () => void }> = ({ onClose }) => 
         </button>
       </div>
       <p className="text-xs text-slate-300 leading-relaxed">
-        <strong>SKYBREAK</strong> is an original 2.5D stylized Three.js jetpack arena shooter featuring
-        local solo and 2-player dynamic split-screen combat, dual-stick Xbox controller support,
+        <strong>SKYBREAK</strong> is an original 3D multi-axis jetpack arena shooter featuring
+        local solo and 2-player dynamic split-screen combat, free 360° dual-stick &amp; mouse camera rotation,
         weapon-dependent camera zoom, 10 distinct weapons, 3 grenade types, 6 original maps,
         modular 3D character customization, and intelligent bots.
       </p>
       <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-[11px] text-slate-400 space-y-1">
-        <div><strong className="text-slate-200">Simulation:</strong> Fixed 60Hz deterministic engine decoupled via IMatchTransport (ready for future WebSocket online multiplayer).</div>
-        <div><strong className="text-slate-200">Rendering:</strong> Three.js PBR with RoomEnvironment, InstancedMesh pooling, and Scissor dynamic split-screen.</div>
+        <div><strong className="text-slate-200">Simulation:</strong> Fixed 60Hz deterministic 3D engine with continuous AABB raycasting, decoupled via IMatchTransport.</div>
+        <div><strong className="text-slate-200">Rendering:</strong> Three.js PBR with Sky Dome shaders, RoomEnvironment PMREM, dynamic flash lighting, and Scissor split-screen.</div>
         <div><strong className="text-slate-200">Audio:</strong> 100% Procedural Web Audio API synthesizer.</div>
       </div>
     </div>

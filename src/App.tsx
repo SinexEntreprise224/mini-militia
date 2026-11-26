@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { ControlsGuideModal } from './components/ControlsGuideModal';
 import { CustomizationScreen } from './components/CustomizationScreen';
 import { GameHUD } from './components/GameHUD';
 import {
@@ -37,6 +38,7 @@ const TITLE_ACTIONS = [
   'split_screen',
   'training',
   'customize',
+  'controls_guide',
   'settings',
   'credits',
 ] as const;
@@ -52,6 +54,7 @@ export default function App() {
   const [screen, setScreen] = useState<ScreenState>('title');
   const [paused, setPaused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showControlsGuide, setShowControlsGuide] = useState(false);
   const [showCredits, setShowCredits] = useState(false);
   const [scoreboardHeld, setScoreboardHeld] = useState(false);
   const [scoreboardToggle, setScoreboardToggle] = useState(false);
@@ -80,14 +83,15 @@ export default function App() {
     isSplitActive: boolean;
     p1Zoom: { distance: number; label: string };
     p2Zoom: { distance: number; label: string };
+    pointerLocked: boolean;
   }>({
     snapshot: null,
     isSplitActive: false,
     p1Zoom: { distance: 100, label: 'STD' },
     p2Zoom: { distance: 100, label: 'STD' },
+    pointerLocked: false,
   });
 
-  // Mutable refs for the 60fps isolated WebGL loop
   const rendererRef = useRef<ArenaRenderer | null>(null);
   const inputRef = useRef<InputManager | null>(null);
   const soundRef = useRef<SoundEngine | null>(null);
@@ -97,6 +101,7 @@ export default function App() {
     screen,
     paused,
     showSettings,
+    showControlsGuide,
     showCredits,
     settings,
     matchDraft,
@@ -109,6 +114,7 @@ export default function App() {
     screen,
     paused,
     showSettings,
+    showControlsGuide,
     showCredits,
     settings,
     matchDraft,
@@ -178,6 +184,7 @@ export default function App() {
 
     setPaused(false);
     setShowSettings(false);
+    setShowControlsGuide(false);
     setScoreboardHeld(false);
     setScoreboardToggle(false);
     setScreen('playing');
@@ -187,10 +194,15 @@ export default function App() {
       isSplitActive: false,
       p1Zoom: { distance: 100, label: 'STD' },
       p2Zoom: { distance: 100, label: 'STD' },
+      pointerLocked: false,
     });
+    if (!d.twoPlayerLocal && d.p1Input === 'kb_mouse') {
+      inputRef.current?.requestLock(canvasMountRef.current);
+    }
   }, []);
 
   const leaveMatch = useCallback(() => {
+    inputRef.current?.exitLock();
     transportRef.current?.dispose();
     transportRef.current = null;
     soundRef.current?.setJetpackThrust(0);
@@ -198,8 +210,21 @@ export default function App() {
     setScoreboardHeld(false);
     setScoreboardToggle(false);
     setScreen('title');
-    setHudState((prev) => ({ ...prev, snapshot: null }));
+    setHudState((prev) => ({ ...prev, snapshot: null, pointerLocked: false }));
   }, []);
+
+  // Release pointer lock cleanly when pausing or leaving gameplay
+  useEffect(() => {
+    if (
+      screen !== 'playing' ||
+      paused ||
+      showSettings ||
+      showControlsGuide ||
+      hudState.snapshot?.phase === 'ended'
+    ) {
+      inputRef.current?.exitLock();
+    }
+  }, [screen, paused, showSettings, showControlsGuide, hudState.snapshot?.phase]);
 
   const triggerTitleAction = useCallback(
     (action: (typeof TITLE_ACTIONS)[number]) => {
@@ -228,6 +253,9 @@ export default function App() {
           break;
         case 'customize':
           setScreen('customization');
+          break;
+        case 'controls_guide':
+          setShowControlsGuide(true);
           break;
         case 'settings':
           setShowSettings(true);
@@ -262,12 +290,14 @@ export default function App() {
       },
       () => {
         const st = appStateRef.current;
-        if (st.screen === 'playing' && !st.showSettings) {
-          setPaused((p) => !p);
+        if (st.showControlsGuide) {
+          setShowControlsGuide(false);
         } else if (st.showSettings) {
           setShowSettings(false);
         } else if (st.showCredits) {
           setShowCredits(false);
+        } else if (st.screen === 'playing') {
+          setPaused((p) => !p);
         } else if (st.screen === 'setup' || st.screen === 'customization') {
           setScreen('title');
         }
@@ -310,7 +340,7 @@ export default function App() {
       const st = appStateRef.current;
 
       if (st.screen === 'playing' && transportRef.current) {
-        if (!st.paused && !st.showSettings) {
+        if (!st.paused && !st.showSettings && !st.showControlsGuide) {
           const prevSnap = transportRef.current.getLatestSnapshot();
           const p1 = prevSnap.players.find((p) => p.localSlot === 0);
           const p2 = prevSnap.players.find((p) => p.localSlot === 1);
@@ -319,24 +349,12 @@ export default function App() {
           let anyScoreboard = false;
 
           if (p1) {
-            const res = input.samplePlayerInput(
-              p1,
-              st.matchDraft.p1Input,
-              prevSnap.players,
-              (sx, sy, px, py) =>
-                renderer.screenToWorldAim(sx, sy, px, py, st.settings.splitOrientation)
-            );
+            const res = input.samplePlayerInput(p1, st.matchDraft.p1Input, prevSnap.players, dt);
             inputs.push(res.frame);
             if (res.scoreboardHeld) anyScoreboard = true;
           }
           if (p2 && st.matchDraft.twoPlayerLocal) {
-            const res = input.samplePlayerInput(
-              p2,
-              st.matchDraft.p2Input,
-              prevSnap.players,
-              (sx, sy, px, py) =>
-                renderer.screenToWorldAim(sx, sy, px, py, st.settings.splitOrientation)
-            );
+            const res = input.samplePlayerInput(p2, st.matchDraft.p2Input, prevSnap.players, dt);
             inputs.push(res.frame);
             if (res.scoreboardHeld) anyScoreboard = true;
           }
@@ -345,7 +363,6 @@ export default function App() {
 
           const snap = transportRef.current.step(dt, inputs);
 
-          // Sound & controller vibration feedback
           sound.playEvents(snap.soundEvents);
           const activeJets = snap.players.filter((p) => p.alive && p.jetpackActive).length;
           sound.setJetpackThrust(activeJets);
@@ -382,10 +399,10 @@ export default function App() {
               isSplitActive: renderer.cameras.isSplitScreenActive(),
               p1Zoom: renderer.cameras.getPlayerZoomInfo(0),
               p2Zoom: renderer.cameras.getPlayerZoomInfo(1),
+              pointerLocked: input.isPointerLocked(),
             });
           }
         } else {
-          // Paused: still render scene cleanly, pause jetpack hum
           sound.setJetpackThrust(0);
           input.pollMenuNavigation();
           renderer.renderMatch(
@@ -397,11 +414,10 @@ export default function App() {
           );
         }
       } else {
-        // Title / Setup / Customization: live 3D arena pan + controller menu navigation
         sound.setJetpackThrust(0);
         const nav = input.pollMenuNavigation();
 
-        if (st.screen === 'title' && !st.showSettings && !st.showCredits) {
+        if (st.screen === 'title' && !st.showSettings && !st.showControlsGuide && !st.showCredits) {
           if (nav.down || nav.right) {
             setTitleFocusIdx((i) => (i + 1) % TITLE_ACTIONS.length);
             sound.playUiClick(false);
@@ -441,9 +457,8 @@ export default function App() {
     };
   }, [showToast, triggerTitleAction]);
 
-  // Title Enter/Space quick start
   useEffect(() => {
-    if (screen !== 'title' || showSettings || showCredits) return;
+    if (screen !== 'title' || showSettings || showControlsGuide || showCredits) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.code === 'Enter') {
         e.preventDefault();
@@ -452,15 +467,31 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [screen, showSettings, showCredits, titleFocusIdx, triggerTitleAction]);
+  }, [screen, showSettings, showControlsGuide, showCredits, titleFocusIdx, triggerTitleAction]);
 
   return (
     <div
       className="relative w-full h-full overflow-hidden bg-slate-950 font-sans"
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* Isolated WebGL Canvas Container */}
-      <div ref={canvasMountRef} className="fixed inset-0 z-0" />
+      {/* Isolated WebGL Canvas Container (click locks pointer during active match) */}
+      <div
+        ref={canvasMountRef}
+        className="fixed inset-0 z-0"
+        onClick={() => {
+          if (
+            screen === 'playing' &&
+            !paused &&
+            !showSettings &&
+            !showControlsGuide &&
+            hudState.snapshot?.phase === 'playing' &&
+            !matchDraft.twoPlayerLocal &&
+            matchDraft.p1Input === 'kb_mouse'
+          ) {
+            inputRef.current?.requestLock(canvasMountRef.current);
+          }
+        }}
+      />
 
       {/* Controller Connection Toast */}
       {toastMsg && (
@@ -472,19 +503,19 @@ export default function App() {
       {/* TITLE SCREEN */}
       {screen === 'title' && (
         <div className="fixed inset-0 z-20 flex flex-col justify-between p-6 sm:p-10 pointer-events-none">
-          {/* Top Bar: Controller Status + Map Showcase Switcher */}
-          <div className="flex items-center justify-between pointer-events-auto">
-            <div className="bg-slate-950/85 border border-slate-700 rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-300 flex items-center gap-2">
-              <span className="text-sky-400 font-bold">LOCAL ARENA EDITION</span>
+          {/* Top Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
+            <div className="bg-slate-950/88 border border-slate-700 rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-300 flex items-center gap-2">
+              <span className="text-sky-400 font-bold">ARENA 3D MULTI-AXES</span>
               <span className="text-slate-600">|</span>
               <span>
                 {gamepads.length > 0
-                  ? `${gamepads.length} Xbox/Gamepad Ready`
-                  : 'KB + Mouse / Plug Xbox Controller'}
+                  ? `${gamepads.length} Manette(s) Xbox Prête(s)`
+                  : 'Clavier + Souris / Branche Manette Xbox'}
               </span>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-slate-950/85 border border-slate-700 rounded-xl p-1">
+            <div className="flex items-center gap-1.5 bg-slate-950/88 border border-slate-700 rounded-xl p-1 flex-wrap">
               {MAP_LIST.map((m) => (
                 <button
                   key={m.id}
@@ -501,26 +532,31 @@ export default function App() {
             </div>
           </div>
 
-          {/* Left-aligned Title Lockup & Menu Actions over 35%+ open 3D arena vista */}
-          <div className="max-w-md space-y-6 pointer-events-auto my-auto">
-            <div>
+          {/* Left-aligned Upgraded Title Emblem & Menu Actions */}
+          <div className="max-w-md space-y-5 pointer-events-auto my-auto">
+            <div className="bg-slate-950/65 border border-slate-800/80 rounded-2xl p-4">
               <svg
-                viewBox="0 0 420 96"
-                className="w-full max-w-[380px] h-auto drop-shadow-lg"
+                viewBox="0 0 460 112"
+                className="w-full max-w-[420px] h-auto"
                 aria-label="SKYBREAK"
               >
                 <defs>
                   <linearGradient id="skyGrad" x1="0" y1="0" x2="1" y2="1">
                     <stop offset="0%" stopColor="#38bdf8" />
-                    <stop offset="55%" stopColor="#f8fafc" />
+                    <stop offset="52%" stopColor="#f8fafc" />
                     <stop offset="100%" stopColor="#fb923c" />
                   </linearGradient>
                 </defs>
-                <polygon points="8,14 28,14 16,80 0,80" fill="#fb923c" />
-                <polygon points="32,14 42,14 30,80 20,80" fill="#38bdf8" />
+                {/* Wing / Thruster Emblem */}
+                <polygon points="8,18 36,18 20,82 0,82" fill="#fb923c" />
+                <polygon points="40,18 52,18 36,82 24,82" fill="#38bdf8" />
+                <circle cx="428" cy="48" r="18" fill="none" stroke="#38bdf8" strokeWidth="2.5" opacity="0.7" />
+                <circle cx="428" cy="48" r="4" fill="#fb923c" />
+                <line x1="402" y1="48" x2="416" y2="48" stroke="#38bdf8" strokeWidth="2" />
+                <line x1="440" y1="48" x2="454" y2="48" stroke="#38bdf8" strokeWidth="2" />
                 <text
-                  x="52"
-                  y="66"
+                  x="62"
+                  y="68"
                   fill="url(#skyGrad)"
                   fontFamily="system-ui, -apple-system, sans-serif"
                   fontWeight="900"
@@ -530,54 +566,55 @@ export default function App() {
                   SKYBREAK
                 </text>
                 <text
-                  x="55"
-                  y="88"
+                  x="64"
+                  y="94"
                   fill="#cbd5e1"
                   fontFamily="system-ui, sans-serif"
-                  fontWeight="700"
-                  fontSize="13"
-                  letterSpacing="5"
+                  fontWeight="800"
+                  fontSize="12.5"
+                  letterSpacing="4.5"
                 >
-                  3D JETPACK ARENA SHOOTER
+                  3D JETPACK ARENA SHOOTER · 360° COMBAT
                 </text>
               </svg>
             </div>
 
-            <div className="flex flex-col gap-2.5">
+            <div className="flex flex-col gap-2">
               {(
                 [
-                  ['quick_play', 'PLAY SOLO (VS BOTS)', 'bg-amber-400 hover:bg-amber-300 text-slate-950 font-black'],
-                  ['split_screen', 'LOCAL 2-PLAYER SPLIT-SCREEN', 'bg-orange-500 hover:bg-orange-400 text-slate-950 font-black'],
-                  ['training', 'TRAINING RANGE (OFFLINE)', 'bg-slate-900/95 hover:bg-slate-800 text-sky-300 border border-slate-700 font-bold'],
-                  ['customize', 'CHARACTER CUSTOMIZATION', 'bg-slate-900/95 hover:bg-slate-800 text-white border border-slate-700 font-bold'],
-                  ['settings', 'SETTINGS & XBOX CONTROLS', 'bg-slate-900/95 hover:bg-slate-800 text-slate-200 border border-slate-700 font-bold'],
-                  ['credits', 'CREDITS & ARCHITECTURE', 'bg-slate-900/95 hover:bg-slate-800 text-slate-400 border border-slate-800 font-semibold'],
+                  ['quick_play', 'JOUER EN SOLO (VS BOTS)', 'bg-amber-400 hover:bg-amber-300 text-slate-950 font-black'],
+                  ['split_screen', '2 JOUEURS LOCAL (ÉCRAN SCINDÉ)', 'bg-orange-500 hover:bg-orange-400 text-slate-950 font-black'],
+                  ['training', 'ENTRAÎNEMENT LIBRE', 'bg-slate-900/95 hover:bg-slate-800 text-sky-300 border border-slate-700 font-bold'],
+                  ['customize', 'PERSONNALISATION 3D', 'bg-slate-900/95 hover:bg-slate-800 text-white border border-slate-700 font-bold'],
+                  ['controls_guide', 'GUIDE COMMANDES (POUCE MANETTE & CLAVIER)', 'bg-sky-950/95 hover:bg-sky-900 text-sky-200 border border-sky-500/60 font-bold'],
+                  ['settings', 'PARAMÈTRES & SENSIBILITÉ', 'bg-slate-900/95 hover:bg-slate-800 text-slate-200 border border-slate-700 font-bold'],
+                  ['credits', 'CRÉDITS & ARCHITECTURE', 'bg-slate-900/95 hover:bg-slate-800 text-slate-400 border border-slate-800 font-semibold'],
                 ] as const
               ).map(([id, label, cls], idx) => (
                 <button
                   key={id}
                   onClick={() => triggerTitleAction(id)}
                   onMouseEnter={() => setTitleFocusIdx(idx)}
-                  className={`w-full px-5 py-3 rounded-xl text-left text-sm tracking-wide flex items-center justify-between transition cursor-pointer ${cls} ${
+                  className={`w-full px-5 py-2.5 rounded-xl text-left text-xs sm:text-sm tracking-wide flex items-center justify-between transition cursor-pointer ${cls} ${
                     titleFocusIdx === idx ? 'ring-2 ring-white' : ''
                   }`}
                 >
                   <span>{label}</span>
-                  <span className="text-xs opacity-75">
-                    {titleFocusIdx === idx ? '[A / ENTER]' : ''}
+                  <span className="text-[11px] opacity-75">
+                    {titleFocusIdx === idx ? '[A / ENTRÉE]' : ''}
                   </span>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Flat Control Hint Line */}
+          {/* Flat Bottom Control Summary */}
           <div className="bg-slate-950/90 border border-slate-800 rounded-xl px-4 py-2 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2">
             <span>
-              <strong className="text-sky-400">PC:</strong> A/D Move · Space Jump/Jetpack · Mouse Aim · LMB Shoot · RMB Zoom · R Reload · E Pickup · Q Swap · G Grenade · F Melee
+              <strong className="text-sky-400">PC:</strong> W/A/S/D Bouger 3D · Souris Caméra 360° · Espace Jetpack · Clic G Tir · Clic D Zoom · R Recharger · E Ramasser
             </span>
             <span>
-              <strong className="text-orange-400">Xbox:</strong> L-Stick Move · R-Stick Aim · A Jetpack · RT Fire · LT Zoom · X Reload/Pickup · Y Swap · RB Grenade · B Melee
+              <strong className="text-orange-400">Xbox:</strong> Pouce G Bouger · Pouce D Caméra 360°/Haut/Bas · A Jetpack · RT Tir · LT Zoom · X Ramasser/Recharger
             </span>
           </div>
         </div>
@@ -625,12 +662,14 @@ export default function App() {
           splitMode={settings.splitScreenMode}
           p1Zoom={hudState.p1Zoom}
           p2Zoom={hudState.p2Zoom}
+          pointerLocked={hudState.pointerLocked}
           onPauseClick={() => setPaused((p) => !p)}
           onScoreboardClick={() => setScoreboardToggle((s) => !s)}
+          onControlsClick={() => setShowControlsGuide(true)}
         />
       )}
 
-      {/* SCOREBOARD (Tab / View / Toggle) */}
+      {/* SCOREBOARD */}
       {screen === 'playing' &&
         hudState.snapshot &&
         hudState.snapshot.phase === 'playing' &&
@@ -650,11 +689,21 @@ export default function App() {
         )}
 
       {/* PAUSE MENU */}
-      {screen === 'playing' && paused && !showSettings && (
+      {screen === 'playing' && paused && !showSettings && !showControlsGuide && (
         <PauseModal
           onResume={() => setPaused(false)}
+          onControls={() => setShowControlsGuide(true)}
           onSettings={() => setShowSettings(true)}
           onLeave={leaveMatch}
+        />
+      )}
+
+      {/* CONTROLS & THUMBSTICK GUIDE MODAL */}
+      {showControlsGuide && (
+        <ControlsGuideModal
+          settings={settings}
+          onClose={() => setShowControlsGuide(false)}
+          onOpenSettings={() => setShowSettings(true)}
         />
       )}
 

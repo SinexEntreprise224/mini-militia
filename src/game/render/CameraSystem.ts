@@ -1,30 +1,63 @@
 import * as THREE from 'three';
 import { WEAPONS } from '../data/weapons';
+import { aimAnglesToVector, raycastSolidPlatforms3D } from '../sim/Physics';
 import { MapData, PlayerState, SplitScreenMode } from '../types';
 
-export interface CameraTargetState {
-  x: number;
-  y: number;
-  z: number;
-  zoomRatio: number; // 1.0 = standard, >1 = zoomed in, <1 = zoomed out
+interface CamRuntimeState {
+  posX: number;
+  posY: number;
+  posZ: number;
+  lookX: number;
+  lookY: number;
+  lookZ: number;
+  fov: number;
+  armDist: number;
+  initialized: boolean;
 }
 
-const SPLIT_ENTER_DIST = 16.5;
-const SPLIT_EXIT_DIST = 13.0;
+const SPLIT_ENTER_DIST = 12.0;
+const SPLIT_EXIT_DIST = 9.0;
+
+function angleDiff(a: number, b: number): number {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return Math.abs(d);
+}
 
 export class CameraSystem {
   public readonly camP1: THREE.PerspectiveCamera;
   public readonly camP2: THREE.PerspectiveCamera;
 
-  private p1State: CameraTargetState = { x: 0, y: 6, z: 22, zoomRatio: 1 };
-  private p2State: CameraTargetState = { x: 0, y: 6, z: 22, zoomRatio: 1 };
+  private p1State: CamRuntimeState = {
+    posX: 0,
+    posY: 6,
+    posZ: 12,
+    lookX: 0,
+    lookY: 5,
+    lookZ: 0,
+    fov: 60,
+    armDist: 5.2,
+    initialized: false,
+  };
+  private p2State: CamRuntimeState = {
+    posX: 0,
+    posY: 6,
+    posZ: 12,
+    lookX: 0,
+    lookY: 5,
+    lookZ: 0,
+    fov: 60,
+    armDist: 5.2,
+    initialized: false,
+  };
   private splitActive = false;
 
   constructor(aspect: number) {
-    this.camP1 = new THREE.PerspectiveCamera(40, aspect, 0.5, 240);
-    this.camP2 = new THREE.PerspectiveCamera(40, aspect, 0.5, 240);
-    this.camP1.position.set(0, 6, 22);
-    this.camP2.position.set(0, 6, 22);
+    this.camP1 = new THREE.PerspectiveCamera(60, aspect, 0.2, 260);
+    this.camP2 = new THREE.PerspectiveCamera(60, aspect, 0.2, 260);
+    this.camP1.position.set(0, 6, 12);
+    this.camP2.position.set(0, 6, 12);
   }
 
   public isSplitScreenActive(): boolean {
@@ -32,64 +65,136 @@ export class CameraSystem {
   }
 
   public getPlayerZoomInfo(slot: 0 | 1): { distance: number; label: string } {
-    const z = slot === 0 ? this.p1State.z : this.p2State.z;
-    const pct = Math.round((22 / Math.max(10, z)) * 100);
-    const label = z > 27 ? 'WIDE' : z < 17 ? 'CLOSE' : 'STD';
+    const st = slot === 0 ? this.p1State : this.p2State;
+    const pct = Math.round((60 / Math.max(20, st.fov)) * 100);
+    const label = st.fov < 44 ? 'OPTIC' : st.armDist > 6.5 ? 'WIDE' : st.armDist < 4.4 ? 'CLOSE' : 'STD';
     return { distance: pct, label };
   }
 
-  private computeTargetForPlayer(
+  private computeChaseTargetForPlayer(
     player: PlayerState,
     allPlayers: PlayerState[],
     map: MapData
-  ): { tx: number; ty: number; tz: number } {
+  ): {
+    posX: number;
+    posY: number;
+    posZ: number;
+    lookX: number;
+    lookY: number;
+    lookZ: number;
+    fov: number;
+    armDist: number;
+  } {
     const activeWeapon = player.weapons[player.activeSlot];
     const spec = WEAPONS[activeWeapon ? activeWeapon.weaponId : 'pistol'];
     const profile = spec.zoomProfile;
 
-    // 1. Base vs Aim zoom
-    let targetZ = player.zoomHeld ? profile.aimZoom : profile.baseZoom;
-    targetZ += player.manualZoomOffset;
+    let targetArm = player.zoomHeld ? profile.aimZoom : profile.baseZoom;
+    targetArm = THREE.MathUtils.clamp(targetArm + player.manualZoomOffset * 0.45, 2.3, 10.5);
 
-    // 2. Aim lookahead
-    const lookMult = player.zoomHeld ? 1.35 : 1.0;
-    let tx = player.x + Math.cos(player.aimAngle) * profile.lookAhead * lookMult;
-    let ty = player.y + 1.4 + Math.sin(player.aimAngle) * profile.lookAhead * 0.65 * lookMult;
+    const targetFov = player.zoomHeld ? profile.aimFov ?? 46 : profile.baseFov ?? 60;
 
-    // 3. Nearby combat awareness (subtle framing toward closest visible threat)
-    let nearestThreat: PlayerState | null = null;
-    let nearestDist = 24;
-    for (const other of allPlayers) {
+    // Subtle zoom out in hectic close brawls
+    let nearEnemies = 0;
+    for (let i = 0; i < allPlayers.length; i++) {
+      const other = allPlayers[i];
       if (!other.alive || other.id === player.id) continue;
       if (player.team !== 0 && other.team === player.team) continue;
-      const d = Math.hypot(other.x - player.x, other.y - player.y);
-      if (d < nearestDist) {
-        nearestDist = d;
-        nearestThreat = other;
-      }
+      const d = Math.hypot(other.x - player.x, other.y - player.y, other.z - player.z);
+      if (d < 12) nearEnemies++;
+    }
+    if (!player.zoomHeld && nearEnemies > 1) {
+      targetArm = Math.min(10.5, targetArm + 0.6);
     }
 
-    if (nearestThreat) {
-      const w = profile.enemyWeight * (1 - nearestDist / 26);
-      tx = THREE.MathUtils.lerp(tx, (player.x + nearestThreat.x) * 0.5, w);
-      ty = THREE.MathUtils.lerp(ty, (player.y + nearestThreat.y) * 0.5 + 1.2, w * 0.7);
-      // Slightly zoom out in chaotic multi-height duels if holding close weapon, or zoom in slightly if isolated
-      if (nearestDist > 14 && spec.category !== 'shotgun' && spec.category !== 'melee') {
-        targetZ += 1.5;
-      }
+    const dir = aimAnglesToVector(player.aimYaw, player.aimPitch);
+    // Horizontal right vector relative to aimYaw (0 = -Z, right = +X)
+    const rightX = Math.cos(player.aimYaw);
+    const rightZ = -Math.sin(player.aimYaw);
+    const shoulder = player.zoomHeld ? 0.56 : 0.68;
+
+    // Pivot near head/shoulder so raycast stays inside walkable corridor
+    const pivotX = player.x + rightX * shoulder * 0.65;
+    const pivotY = player.y + 1.54;
+    const pivotZ = player.z + rightZ * shoulder * 0.65;
+
+    // Ideal camera position behind player gaze + slight vertical lift
+    let idealX = player.x + rightX * shoulder - dir.dx * targetArm;
+    let idealY = pivotY + 0.36 - dir.dy * targetArm;
+    let idealZ = player.z + rightZ * shoulder - dir.dz * targetArm;
+
+    // Keep within outer arena shell bounds (just inside perimeter wall faces)
+    const maxBoundX = map.width * 0.5 - 0.55;
+    const maxBoundZ = map.depth * 0.5 - 0.55;
+    idealX = THREE.MathUtils.clamp(idealX, -maxBoundX, maxBoundX);
+    idealZ = THREE.MathUtils.clamp(idealZ, -maxBoundZ, maxBoundZ);
+    idealY = THREE.MathUtils.clamp(idealY, map.floorY + 0.55, map.ceilingY - 0.45);
+
+    // Raycast against solid platforms & walls so camera NEVER clips into geometry
+    const hit = raycastSolidPlatforms3D(
+      pivotX,
+      pivotY,
+      pivotZ,
+      idealX,
+      idealY,
+      idealZ,
+      map.platforms
+    );
+
+    let posX = idealX;
+    let posY = idealY;
+    let posZ = idealZ;
+    if (hit) {
+      const safeT = Math.max(0.18, hit.t * 0.86);
+      posX = pivotX + (idealX - pivotX) * safeT + hit.nx * 0.12;
+      posY = pivotY + (idealY - pivotY) * safeT + hit.ny * 0.12;
+      posZ = pivotZ + (idealZ - pivotZ) * safeT + hit.nz * 0.12;
     }
 
-    // Clamp Z so characters remain readable & player retains awareness
-    targetZ = THREE.MathUtils.clamp(targetZ, 13.0, 38.0);
+    // Look point far along exact crosshair ray from the shoulder/eye pivot
+    const lookDist = 36;
+    const lookX = pivotX + dir.dx * lookDist;
+    const lookY = pivotY + dir.dy * lookDist;
+    const lookZ = pivotZ + dir.dz * lookDist;
 
-    // Clamp X/Y within reasonable arena bounds
-    const maxX = map.width * 0.5 - 4;
-    const minY = map.floorY + 3.2;
-    const maxY = map.ceilingY - 3.5;
-    tx = THREE.MathUtils.clamp(tx, -maxX, maxX);
-    ty = THREE.MathUtils.clamp(ty, minY, maxY);
+    return {
+      posX,
+      posY,
+      posZ,
+      lookX,
+      lookY,
+      lookZ,
+      fov: targetFov,
+      armDist: targetArm,
+    };
+  }
 
-    return { tx, ty, tz: targetZ };
+  private dampState(
+    state: CamRuntimeState,
+    target: ReturnType<CameraSystem['computeChaseTargetForPlayer']>,
+    dt: number
+  ): void {
+    if (!state.initialized || dt <= 0) {
+      state.posX = target.posX;
+      state.posY = target.posY;
+      state.posZ = target.posZ;
+      state.lookX = target.lookX;
+      state.lookY = target.lookY;
+      state.lookZ = target.lookZ;
+      state.fov = target.fov;
+      state.armDist = target.armDist;
+      state.initialized = true;
+      return;
+    }
+
+    state.posX = THREE.MathUtils.damp(state.posX, target.posX, 16, dt);
+    state.posY = THREE.MathUtils.damp(state.posY, target.posY, 16, dt);
+    state.posZ = THREE.MathUtils.damp(state.posZ, target.posZ, 16, dt);
+    state.lookX = THREE.MathUtils.damp(state.lookX, target.lookX, 24, dt);
+    state.lookY = THREE.MathUtils.damp(state.lookY, target.lookY, 24, dt);
+    state.lookZ = THREE.MathUtils.damp(state.lookZ, target.lookZ, 24, dt);
+    state.fov = THREE.MathUtils.damp(state.fov, target.fov, 11, dt);
+    state.armDist = THREE.MathUtils.damp(state.armDist, target.armDist, 10, dt);
   }
 
   public update(
@@ -109,60 +214,68 @@ export class CameraSystem {
     if (!twoPlayerLocal || !p1 || !p2) {
       this.splitActive = false;
       if (p1) {
-        const tgt = this.computeTargetForPlayer(p1, players, map);
-        this.p1State.x = THREE.MathUtils.damp(this.p1State.x, tgt.tx, 8.5, dt);
-        this.p1State.y = THREE.MathUtils.damp(this.p1State.y, tgt.ty, 8.5, dt);
-        this.p1State.z = THREE.MathUtils.damp(this.p1State.z, tgt.tz, 5.5, dt);
+        const tgt = this.computeChaseTargetForPlayer(p1, players, map);
+        this.dampState(this.p1State, tgt, dt);
       }
       this.applyToCamera(this.camP1, this.p1State, width / Math.max(1, height), screenShake);
       return;
     }
 
-    // Determine split-screen state for 2-Player Local
-    const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+    const yawDiff = angleDiff(p1.aimYaw, p2.aimYaw);
+
     if (splitMode === 'always_split') {
       this.splitActive = true;
     } else if (splitMode === 'shared') {
       this.splitActive = false;
     } else {
-      // Dynamic split-screen with hysteresis
-      if (!this.splitActive && dist > SPLIT_ENTER_DIST) {
+      // Dynamic split-screen: merge when standing side-by-side looking similarly, split when separated or rotating independently
+      if (!this.splitActive && (dist > SPLIT_ENTER_DIST || yawDiff > 0.78 || p1.zoomHeld || p2.zoomHeld)) {
         this.splitActive = true;
-      } else if (this.splitActive && dist < SPLIT_EXIT_DIST) {
+      } else if (this.splitActive && dist < SPLIT_EXIT_DIST && yawDiff < 0.45 && !p1.zoomHeld && !p2.zoomHeld) {
         this.splitActive = false;
       }
     }
 
     if (!this.splitActive) {
-      // Shared dynamic framing camera covering both players
-      const midX = (p1.x + p2.x) * 0.5;
-      const midY = (p1.y + p2.y) * 0.5 + 1.5;
-      const t1 = this.computeTargetForPlayer(p1, players, map);
-      const t2 = this.computeTargetForPlayer(p2, players, map);
-      const baseZ = Math.max(t1.tz, t2.tz);
-      const neededZ = Math.max(baseZ, 16 + dist * 1.12);
-      const clampedZ = THREE.MathUtils.clamp(neededZ, 15.0, 38.0);
+      // Shared framing camera oriented along average yaw
+      const avgX = (p1.x + p2.x) * 0.5;
+      const avgY = (p1.y + p2.y) * 0.5 + 1.5;
+      const avgZ = (p1.z + p2.z) * 0.5;
+      const avgDir = aimAnglesToVector(p1.aimYaw, p1.aimPitch * 0.6);
+      const arm = Math.max(7.2, 6.2 + dist * 0.65);
 
-      this.p1State.x = THREE.MathUtils.damp(this.p1State.x, midX, 8, dt);
-      this.p1State.y = THREE.MathUtils.damp(this.p1State.y, midY, 8, dt);
-      this.p1State.z = THREE.MathUtils.damp(this.p1State.z, clampedZ, 5, dt);
-      this.p2State.x = this.p1State.x;
-      this.p2State.y = this.p1State.y;
-      this.p2State.z = this.p1State.z;
+      let idealX = avgX - avgDir.dx * arm;
+      let idealY = avgY + 1.2 - avgDir.dy * arm;
+      let idealZ = avgZ - avgDir.dz * arm;
 
+      const hit = raycastSolidPlatforms3D(avgX, avgY, avgZ, idealX, idealY, idealZ, map.platforms);
+      if (hit) {
+        const safeT = Math.max(0.25, hit.t * 0.85);
+        idealX = avgX + (idealX - avgX) * safeT;
+        idealY = avgY + (idealY - avgY) * safeT;
+        idealZ = avgZ + (idealZ - avgZ) * safeT;
+      }
+
+      const sharedTarget = {
+        posX: idealX,
+        posY: Math.max(map.floorY + 0.8, idealY),
+        posZ: idealZ,
+        lookX: avgX + avgDir.dx * 16,
+        lookY: avgY + avgDir.dy * 16,
+        lookZ: avgZ + avgDir.dz * 16,
+        fov: 64,
+        armDist: arm,
+      };
+      this.dampState(this.p1State, sharedTarget, dt);
+      this.p2State = { ...this.p1State };
       this.applyToCamera(this.camP1, this.p1State, width / Math.max(1, height), screenShake);
     } else {
-      // Independent split-screen cameras
-      const t1 = this.computeTargetForPlayer(p1, players, map);
-      const t2 = this.computeTargetForPlayer(p2, players, map);
-
-      this.p1State.x = THREE.MathUtils.damp(this.p1State.x, t1.tx, 9, dt);
-      this.p1State.y = THREE.MathUtils.damp(this.p1State.y, t1.ty, 9, dt);
-      this.p1State.z = THREE.MathUtils.damp(this.p1State.z, t1.tz, 6, dt);
-
-      this.p2State.x = THREE.MathUtils.damp(this.p2State.x, t2.tx, 9, dt);
-      this.p2State.y = THREE.MathUtils.damp(this.p2State.y, t2.ty, 9, dt);
-      this.p2State.z = THREE.MathUtils.damp(this.p2State.z, t2.tz, 6, dt);
+      // Independent 360-degree split-screen cameras for P1 and P2
+      const t1 = this.computeChaseTargetForPlayer(p1, players, map);
+      const t2 = this.computeChaseTargetForPlayer(p2, players, map);
+      this.dampState(this.p1State, t1, dt);
+      this.dampState(this.p2State, t2, dt);
 
       const subAspect =
         splitOrientation === 'vertical'
@@ -176,17 +289,28 @@ export class CameraSystem {
 
   private applyToCamera(
     cam: THREE.PerspectiveCamera,
-    state: CameraTargetState,
+    state: CamRuntimeState,
     aspect: number,
     shake: number
   ): void {
+    let needsProj = false;
     if (Math.abs(cam.aspect - aspect) > 0.002) {
       cam.aspect = aspect;
+      needsProj = true;
+    }
+    if (Math.abs(cam.fov - state.fov) > 0.08) {
+      cam.fov = state.fov;
+      needsProj = true;
+    }
+    if (needsProj) {
       cam.updateProjectionMatrix();
     }
-    const sx = shake > 0 ? (Math.random() - 0.5) * shake : 0;
-    const sy = shake > 0 ? (Math.random() - 0.5) * shake : 0;
-    cam.position.set(state.x + sx, state.y + sy, state.z);
-    cam.lookAt(state.x + sx, state.y + sy - 0.25, 0);
+
+    const sx = shake > 0 ? (Math.random() - 0.5) * shake * 0.65 : 0;
+    const sy = shake > 0 ? (Math.random() - 0.5) * shake * 0.65 : 0;
+    const sz = shake > 0 ? (Math.random() - 0.5) * shake * 0.65 : 0;
+
+    cam.position.set(state.posX + sx, state.posY + sy, state.posZ + sz);
+    cam.lookAt(state.lookX + sx * 0.3, state.lookY + sy * 0.3, state.lookZ + sz * 0.3);
   }
 }

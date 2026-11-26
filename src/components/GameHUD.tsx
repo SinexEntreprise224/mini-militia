@@ -10,8 +10,10 @@ interface Props {
   splitMode: SplitScreenMode;
   p1Zoom: { distance: number; label: string };
   p2Zoom: { distance: number; label: string };
+  pointerLocked: boolean;
   onPauseClick: () => void;
   onScoreboardClick: () => void;
+  onControlsClick: () => void;
 }
 
 function formatTime(sec: number): string {
@@ -21,13 +23,45 @@ function formatTime(sec: number): string {
   return `${m}:${rem.toString().padStart(2, '0')}`;
 }
 
+const CrosshairReticle: React.FC<{ zoomHeld: boolean; reloading: boolean; color: string }> = ({
+  zoomHeld,
+  reloading,
+  color,
+}) => {
+  const gap = zoomHeld ? 5 : 9;
+  const ringR = zoomHeld ? 14 : 18;
+  return (
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      <svg width="52" height="52" viewBox="-26 -26 52 52" className="opacity-90">
+        {zoomHeld && (
+          <circle
+            cx="0"
+            cy="0"
+            r={ringR}
+            fill="none"
+            stroke="#38bdf8"
+            strokeWidth="1.2"
+            strokeDasharray="4 3"
+          />
+        )}
+        <line x1={-gap - 7} y1="0" x2={-gap} y2="0" stroke={reloading ? '#fbbf24' : '#f8fafc'} strokeWidth="2" strokeLinecap="round" />
+        <line x1={gap} y1="0" x2={gap + 7} y2="0" stroke={reloading ? '#fbbf24' : '#f8fafc'} strokeWidth="2" strokeLinecap="round" />
+        <line x1="0" y1={-gap - 7} x2="0" y2={-gap} stroke={reloading ? '#fbbf24' : '#f8fafc'} strokeWidth="2" strokeLinecap="round" />
+        <line x1="0" y1={gap} x2="0" y2={gap + 7} stroke={reloading ? '#fbbf24' : '#f8fafc'} strokeWidth="2" strokeLinecap="round" />
+        <circle cx="0" cy="0" r="2" fill={color || '#38bdf8'} />
+      </svg>
+    </div>
+  );
+};
+
 const PlayerHudCluster: React.FC<{
   player: PlayerState;
   snapshot: MatchSnapshot;
   zoomInfo: { distance: number; label: string };
   compact?: boolean;
   alignRight?: boolean;
-}> = ({ player, snapshot, zoomInfo, compact = false, alignRight = false }) => {
+  showReticle?: boolean;
+}> = ({ player, snapshot, zoomInfo, compact = false, alignRight = false, showReticle = true }) => {
   const activeSlot = player.weapons[player.activeSlot];
   const secondarySlot = player.weapons[player.activeSlot === 0 ? 1 : 0];
   const spec = WEAPONS[activeSlot ? activeSlot.weaponId : 'pistol'];
@@ -43,7 +77,12 @@ const PlayerHudCluster: React.FC<{
   const fuelPct = Math.max(0, Math.min(100, Math.round((player.fuel / player.maxFuel) * 100)));
 
   return (
-    <div className="flex flex-col justify-between h-full p-3 select-none">
+    <div className="relative flex flex-col justify-between h-full p-3 select-none">
+      {/* Centered 3D Aim Reticle */}
+      {showReticle && player.alive && (
+        <CrosshairReticle zoomHeld={player.zoomHeld} reloading={player.reloading} color={spec.color} />
+      )}
+
       {/* Top Row: Health, Fuel & Zoom */}
       <div className={`flex items-start gap-2 ${alignRight ? 'flex-row-reverse' : 'flex-row'}`}>
         <div className="bg-slate-950/85 border border-slate-700/80 rounded-lg px-3 py-2 min-w-[200px]">
@@ -93,7 +132,7 @@ const PlayerHudCluster: React.FC<{
       </div>
 
       {/* Center Prompt: Respawn or Weapon Pickup */}
-      <div className="flex flex-col items-center justify-center gap-2 my-auto">
+      <div className="flex flex-col items-center justify-center gap-2 my-auto pt-16">
         {!player.alive && (
           <div className="bg-slate-950/90 border border-rose-500/70 rounded-lg px-4 py-2 text-center">
             <div className="text-xs uppercase tracking-widest text-rose-400 font-bold">
@@ -194,8 +233,10 @@ export const GameHUD: React.FC<Props> = ({
   splitMode,
   p1Zoom,
   p2Zoom,
+  pointerLocked,
   onPauseClick,
   onScoreboardClick,
+  onControlsClick,
 }) => {
   const p1 = snapshot.players.find((p) => p.localSlot === 0);
   const p2 = snapshot.players.find((p) => p.localSlot === 1);
@@ -247,6 +288,12 @@ export const GameHUD: React.FC<Props> = ({
         </div>
 
         <button
+          onClick={onControlsClick}
+          className="bg-slate-950/90 hover:bg-slate-800 border border-amber-400/50 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-amber-300 cursor-pointer"
+        >
+          GUIDE
+        </button>
+        <button
           onClick={onScoreboardClick}
           className="bg-slate-950/90 hover:bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 cursor-pointer"
           title="Scoreboard (Tab / View)"
@@ -262,7 +309,14 @@ export const GameHUD: React.FC<Props> = ({
         </button>
       </div>
 
-      {/* Top-Right Kill Feed (when single screen) */}
+      {/* Subtle Pointer-Lock / Camera Aim Hint */}
+      {!pointerLocked && !twoPlayerLocal && (
+        <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-20 bg-slate-950/85 border border-slate-700 rounded-lg px-3 py-1 text-[11px] text-slate-300">
+          Clique dans l&apos;arène pour verrouiller la caméra 360° souris (ou utilise le stick droit Xbox)
+        </div>
+      )}
+
+      {/* Top-Right Kill Feed */}
       {!isSplitActive && snapshot.killFeed.length > 0 && (
         <div className="fixed top-14 right-3 z-20 flex flex-col items-end gap-1">
           {snapshot.killFeed.slice(0, 4).map((kf) => (
@@ -301,14 +355,14 @@ export const GameHUD: React.FC<Props> = ({
       {/* Player HUD Viewports */}
       {!twoPlayerLocal && p1 && (
         <div className="w-full h-full">
-          <PlayerHudCluster player={p1} snapshot={snapshot} zoomInfo={p1Zoom} />
+          <PlayerHudCluster player={p1} snapshot={snapshot} zoomInfo={p1Zoom} showReticle />
         </div>
       )}
 
       {twoPlayerLocal && !isSplitActive && p1 && p2 && (
         <div className="w-full h-full grid grid-cols-2">
-          <PlayerHudCluster player={p1} snapshot={snapshot} zoomInfo={p1Zoom} compact />
-          <PlayerHudCluster player={p2} snapshot={snapshot} zoomInfo={p2Zoom} compact alignRight />
+          <PlayerHudCluster player={p1} snapshot={snapshot} zoomInfo={p1Zoom} compact showReticle />
+          <PlayerHudCluster player={p2} snapshot={snapshot} zoomInfo={p2Zoom} compact alignRight showReticle={false} />
         </div>
       )}
 
@@ -319,7 +373,7 @@ export const GameHUD: React.FC<Props> = ({
           }`}
         >
           <div className="relative w-full h-full">
-            <PlayerHudCluster player={p1} snapshot={snapshot} zoomInfo={p1Zoom} compact />
+            <PlayerHudCluster player={p1} snapshot={snapshot} zoomInfo={p1Zoom} compact showReticle />
           </div>
           <div className="relative w-full h-full">
             <PlayerHudCluster
@@ -328,6 +382,7 @@ export const GameHUD: React.FC<Props> = ({
               zoomInfo={p2Zoom}
               compact
               alignRight={splitOrientation === 'vertical'}
+              showReticle
             />
           </div>
         </div>

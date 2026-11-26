@@ -46,10 +46,12 @@ export type SplitScreenMode = 'dynamic' | 'always_split' | 'shared';
 export type TeamId = 0 | 1 | 2; // 0 = FFA / Neutral, 1 = Cobalt (Blue), 2 = Crimson (Red)
 
 export interface WeaponZoomProfile {
-  baseZoom: number;       // Camera distance at rest (higher = wider view)
-  aimZoom: number;        // Camera distance when holding LT / RMB
-  lookAhead: number;      // How far camera shifts in aim direction
-  enemyWeight: number;    // How strongly nearby enemies pull camera framing
+  baseZoom: number;       // Camera chase arm distance at rest
+  aimZoom: number;        // Camera chase arm distance when holding LT / RMB
+  lookAhead: number;      // Forward sightline offset
+  enemyWeight: number;    // Subtle framing weight
+  baseFov?: number;       // Default FOV (60)
+  aimFov?: number;        // Precision optic FOV when aiming (e.g. 28 for sniper)
 }
 
 export interface WeaponSpec {
@@ -58,18 +60,18 @@ export interface WeaponSpec {
   shortName: string;
   category: WeaponCategory;
   description: string;
-  fireRate: number;         // Shots per second
-  damage: number;           // Damage per projectile/hit
-  projectileSpeed: number;  // World units/sec (0 for instant/melee)
-  effectiveRange: number;   // Max travel distance
-  spread: number;           // Radians half-cone spread
-  recoil: number;           // Visual/aim kick
-  reloadTime: number;       // Seconds
+  fireRate: number;
+  damage: number;
+  projectileSpeed: number;
+  effectiveRange: number;
+  spread: number;
+  recoil: number;
+  reloadTime: number;
   magSize: number;
   reserveMax: number;
-  pellets: number;          // >1 for shotguns
+  pellets: number;
   automatic: boolean;
-  explosiveRadius: number;  // >0 for rockets
+  explosiveRadius: number;
   knockback: number;
   color: string;
   trailColor: string;
@@ -85,7 +87,7 @@ export interface GrenadeSpec {
   damage: number;
   radius: number;
   fuseTime: number;
-  duration: number;         // Lingering duration (incendiary / proximity life)
+  duration: number;
   color: string;
 }
 
@@ -137,22 +139,24 @@ export interface CharacterAppearance {
   accessory: AccessoryStyle;
 }
 
-export interface PlatformRect {
+export interface PlatformBox {
   id: string;
   x: number;        // Center X
   y: number;        // Center Y
-  w: number;        // Width
-  h: number;        // Height
-  zDepth?: number;  // Visual 3D depth
-  oneWay?: boolean; // Can jump up through from below
+  z: number;        // Center Z
+  w: number;        // Width (X)
+  h: number;        // Height (Y)
+  d: number;        // Depth (Z)
   style?: 'metal' | 'rock' | 'ice' | 'energy' | 'bridge' | 'sandstone' | 'grate';
-  cover?: boolean;  // Decorative / vertical pillar
+  cover?: boolean;
+  boundary?: boolean;
 }
 
 export interface PickupSpawn {
   id: string;
   x: number;
   y: number;
+  z: number;
   kind: 'weapon' | 'health' | 'ammo';
   weaponId?: WeaponId;
   respawnTime: number;
@@ -161,6 +165,7 @@ export interface PickupSpawn {
 export interface SpawnPoint {
   x: number;
   y: number;
+  z: number;
   team: TeamId; // 0 = any
 }
 
@@ -169,8 +174,9 @@ export interface MapData {
   name: string;
   subtitle: string;
   combatStyle: string;
-  width: number;
-  height: number;
+  width: number;    // X span
+  height: number;   // Y span
+  depth: number;    // Z span
   floorY: number;
   ceilingY: number;
   theme: {
@@ -188,21 +194,22 @@ export interface MapData {
     wallColor: string;
     hazardGlow: string;
   };
-  platforms: PlatformRect[];
+  platforms: PlatformBox[];
   pickupSpawns: PickupSpawn[];
   spawnPoints: SpawnPoint[];
   flagBases: {
-    team1: { x: number; y: number };
-    team2: { x: number; y: number };
+    team1: { x: number; y: number; z: number };
+    team2: { x: number; y: number; z: number };
   };
 }
 
 export type InputDeviceAssignment = 'kb_mouse' | 'gamepad_0' | 'gamepad_1' | 'kb_arrows';
 
 export interface KeyBindings {
+  forward: string;
+  backward: string;
   left: string;
   right: string;
-  down: string;
   jump: string;
   reload: string;
   switchWeapon: string;
@@ -244,10 +251,10 @@ export interface GameSettings {
 
 export interface PlayerInputFrame {
   playerId: string;
-  moveX: number;        // -1..1
-  moveY: number;        // -1..1 (down = drop through)
-  aimAngle: number;     // Radians in XY plane
-  aimActive: boolean;
+  moveX: number;        // -1..1 strafe relative to aimYaw
+  moveZ: number;        // -1..1 forward/backward relative to aimYaw
+  aimYaw: number;       // Horizontal look yaw in radians (0 = -Z)
+  aimPitch: number;     // Vertical look pitch in radians (-1.35..1.35)
   jumpHeld: boolean;
   jumpJustPressed: boolean;
   fireHeld: boolean;
@@ -274,16 +281,18 @@ export interface PlayerState {
   name: string;
   isBot: boolean;
   botDifficulty?: BotDifficulty;
-  localSlot: 0 | 1 | -1; // 0 = P1, 1 = P2, -1 = Bot/Remote
+  localSlot: 0 | 1 | -1;
   team: TeamId;
   appearance: CharacterAppearance;
 
   x: number;
   y: number;
+  z: number;
   vx: number;
   vy: number;
-  facing: 1 | -1;
-  aimAngle: number;
+  vz: number;
+  aimYaw: number;
+  aimPitch: number;
 
   grounded: boolean;
   coyoteTimer: number;
@@ -334,10 +343,13 @@ export interface ProjectileState {
   weaponId: WeaponId;
   x: number;
   y: number;
+  z: number;
   prevX: number;
   prevY: number;
+  prevZ: number;
   vx: number;
   vy: number;
+  vz: number;
   damage: number;
   life: number;
   maxLife: number;
@@ -354,8 +366,10 @@ export interface GrenadeState {
   type: GrenadeType;
   x: number;
   y: number;
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
   fuseTimer: number;
   armed: boolean;
   life: number;
@@ -367,6 +381,7 @@ export interface HazardZoneState {
   team: TeamId;
   x: number;
   y: number;
+  z: number;
   radius: number;
   timer: number;
   tickTimer: number;
@@ -376,6 +391,7 @@ export interface PickupState {
   id: string;
   x: number;
   y: number;
+  z: number;
   kind: 'weapon' | 'health' | 'ammo';
   weaponId?: WeaponId;
   available: boolean;
@@ -386,8 +402,10 @@ export interface FlagState {
   team: TeamId;
   x: number;
   y: number;
+  z: number;
   homeX: number;
   homeY: number;
+  homeZ: number;
   carrierId: string | null;
   atBase: boolean;
   dropTimer: number;
@@ -407,7 +425,7 @@ export interface ParticleEvent {
   type: 'muzzle' | 'impact' | 'explosion' | 'fire_burst' | 'hit_spark' | 'pickup' | 'melee_slash' | 'respawn';
   x: number;
   y: number;
-  angle?: number;
+  z: number;
   color?: string;
   radius?: number;
 }
@@ -430,6 +448,7 @@ export interface SoundEvent {
   weaponId?: WeaponId;
   x: number;
   y: number;
+  z: number;
   listenerSlot?: 0 | 1;
 }
 

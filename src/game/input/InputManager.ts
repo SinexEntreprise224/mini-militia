@@ -6,12 +6,13 @@ import {
   PlayerInputFrame,
   PlayerState,
 } from '../types';
-import { PLAYER_CENTER_Y } from '../sim/Physics';
+import { aimAnglesToVector, PLAYER_CENTER_Y } from '../sim/Physics';
 
 export const DEFAULT_KEY_BINDINGS: KeyBindings = {
+  forward: 'KeyW',
+  backward: 'KeyS',
   left: 'KeyA',
   right: 'KeyD',
-  down: 'KeyS',
   jump: 'Space',
   reload: 'KeyR',
   switchWeapon: 'KeyQ',
@@ -26,11 +27,11 @@ export const DEFAULT_KEY_BINDINGS: KeyBindings = {
 export const DEFAULT_CONTROLLER_SETTINGS: ControllerSettings = {
   horizontalSensitivity: 1.0,
   verticalSensitivity: 1.0,
-  aimDeadZone: 0.16,
-  moveDeadZone: 0.18,
-  aimAcceleration: 1.15,
+  aimDeadZone: 0.15,
+  moveDeadZone: 0.16,
+  aimAcceleration: 1.25,
   aimAssistStrength: 0.45,
-  zoomSensitivity: 0.65,
+  zoomSensitivity: 0.55,
   vibrationEnabled: true,
   invertY: false,
 };
@@ -72,15 +73,18 @@ export class InputManager {
   private keysHeld = new Set<string>();
   private keysJustPressed = new Set<string>();
 
-  private mouseScreenX = 0;
-  private mouseScreenY = 0;
+  private mouseDeltaX = 0;
+  private mouseDeltaY = 0;
+  private lastMouseX: number | null = null;
+  private lastMouseY: number | null = null;
   private mouseLeftHeld = false;
   private mouseLeftJustPressed = false;
   private mouseRightHeld = false;
   private mouseWheelDelta = 0;
+  private pointerLocked = false;
 
   private prevGamepadButtons = new Map<number, boolean[]>();
-  private lastAimAngle = new Map<string, number>();
+  private lookAngles = new Map<string, { yaw: number; pitch: number }>();
   private settings: GameSettings;
 
   private onGamepadChange?: (pads: ConnectedGamepadInfo[], eventMsg?: string) => void;
@@ -102,6 +106,33 @@ export class InputManager {
     this.onGamepadChange = onGamepadChange;
     this.pauseRequestedCallback = onPauseRequested;
   }
+
+  public isPointerLocked(): boolean {
+    return this.pointerLocked;
+  }
+
+  public requestLock(el: HTMLElement | null): void {
+    if (!el || document.pointerLockElement === el) return;
+    try {
+      el.requestPointerLock?.();
+    } catch {
+      // Fallback non-locked mouse look remains active
+    }
+  }
+
+  public exitLock(): void {
+    if (document.pointerLockElement) {
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  private handlePointerLockChange = (): void => {
+    this.pointerLocked = Boolean(document.pointerLockElement);
+  };
 
   private handleKeyDown = (e: KeyboardEvent): void => {
     if (
@@ -128,8 +159,17 @@ export class InputManager {
   };
 
   private handleMouseMove = (e: MouseEvent): void => {
-    this.mouseScreenX = e.clientX;
-    this.mouseScreenY = e.clientY;
+    if (this.pointerLocked) {
+      this.mouseDeltaX += e.movementX || 0;
+      this.mouseDeltaY += e.movementY || 0;
+    } else {
+      if (this.lastMouseX !== null && this.lastMouseY !== null) {
+        this.mouseDeltaX += e.clientX - this.lastMouseX;
+        this.mouseDeltaY += e.clientY - this.lastMouseY;
+      }
+      this.lastMouseX = e.clientX;
+      this.lastMouseY = e.clientY;
+    }
   };
 
   private handleMouseDown = (e: MouseEvent): void => {
@@ -157,6 +197,8 @@ export class InputManager {
     this.keysJustPressed.clear();
     this.mouseLeftHeld = false;
     this.mouseRightHeld = false;
+    this.lastMouseX = null;
+    this.lastMouseY = null;
   };
 
   private handleGamepadConnected = (e: GamepadEvent): void => {
@@ -180,6 +222,7 @@ export class InputManager {
     window.addEventListener('blur', this.handleBlur);
     window.addEventListener('gamepadconnected', this.handleGamepadConnected);
     window.addEventListener('gamepaddisconnected', this.handleGamepadDisconnected);
+    document.addEventListener('pointerlockchange', this.handlePointerLockChange);
   }
 
   public dispose(): void {
@@ -192,6 +235,7 @@ export class InputManager {
     window.removeEventListener('blur', this.handleBlur);
     window.removeEventListener('gamepadconnected', this.handleGamepadConnected);
     window.removeEventListener('gamepaddisconnected', this.handleGamepadDisconnected);
+    document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
   }
 
   private formatPadLabel(gp: Gamepad): string {
@@ -238,18 +282,6 @@ export class InputManager {
     }
     this.prevGamepadButtons.set(gp.index, held);
     return { held, just };
-  }
-
-  public isScoreboardHeld(assignment: InputDeviceAssignment): boolean {
-    if (assignment === 'kb_mouse') {
-      if (this.keysHeld.has(this.settings.keyBindings.scoreboard)) return true;
-    }
-    if (assignment === 'gamepad_0' || assignment === 'gamepad_1') {
-      const slot = assignment === 'gamepad_0' ? 0 : 1;
-      const gp = this.getGamepadAtSlot(slot);
-      if (gp && (gp.buttons[8]?.pressed || gp.buttons[8]?.value > 0.5)) return true;
-    }
-    return false;
   }
 
   public pollMenuNavigation(): MenuNavState {
@@ -309,6 +341,8 @@ export class InputManager {
     this.keysJustPressed.clear();
     this.mouseLeftJustPressed = false;
     this.mouseWheelDelta = 0;
+    this.mouseDeltaX = 0;
+    this.mouseDeltaY = 0;
     return nav;
   }
 
@@ -316,19 +350,25 @@ export class InputManager {
     player: PlayerState,
     assignment: InputDeviceAssignment,
     allPlayers: PlayerState[],
-    screenToWorldAim: (screenX: number, screenY: number, px: number, py: number) => number
+    dt: number
   ): { frame: PlayerInputFrame; pauseJustPressed: boolean; scoreboardHeld: boolean } {
     const kb = this.settings.keyBindings;
     const cs = this.settings.controller;
     let pauseJustPressed = false;
     let scoreboardHeld = false;
 
+    let look = this.lookAngles.get(player.id);
+    if (!look) {
+      look = { yaw: player.aimYaw, pitch: player.aimPitch };
+      this.lookAngles.set(player.id, look);
+    }
+
     const frame: PlayerInputFrame = {
       playerId: player.id,
       moveX: 0,
-      moveY: 0,
-      aimAngle: this.lastAimAngle.get(player.id) ?? player.aimAngle,
-      aimActive: false,
+      moveZ: 0,
+      aimYaw: look.yaw,
+      aimPitch: look.pitch,
       jumpHeld: false,
       jumpJustPressed: false,
       fireHeld: false,
@@ -347,8 +387,10 @@ export class InputManager {
     if (assignment === 'kb_mouse') {
       const left = this.keysHeld.has(kb.left) ? 1 : 0;
       const right = this.keysHeld.has(kb.right) ? 1 : 0;
+      const fwd = this.keysHeld.has(kb.forward) ? 1 : 0;
+      const back = this.keysHeld.has(kb.backward) ? 1 : 0;
       frame.moveX = right - left;
-      frame.moveY = this.keysHeld.has(kb.down) ? -1 : 0;
+      frame.moveZ = fwd - back;
 
       frame.jumpHeld = this.keysHeld.has(kb.jump);
       frame.jumpJustPressed = this.keysJustPressed.has(kb.jump);
@@ -366,21 +408,31 @@ export class InputManager {
       frame.secondaryJustPressed = this.keysJustPressed.has(kb.secondary);
       scoreboardHeld = this.keysHeld.has(kb.scoreboard);
 
-      frame.aimAngle = screenToWorldAim(
-        this.mouseScreenX,
-        this.mouseScreenY,
-        player.x,
-        player.y + PLAYER_CENTER_Y
-      );
-      frame.aimActive = true;
+      // Multi-axis mouse look (rotates camera yaw + pitch)
+      const zoomScale = frame.zoomHeld ? cs.zoomSensitivity : 1.0;
+      const mouseSens = 0.0028 * cs.horizontalSensitivity * zoomScale;
+      const mousePitchSens = 0.0024 * cs.verticalSensitivity * zoomScale * (cs.invertY ? -1 : 1);
+
+      look.yaw -= this.mouseDeltaX * mouseSens;
+      look.pitch = Math.max(-1.28, Math.min(1.28, look.pitch - this.mouseDeltaY * mousePitchSens));
+
+      // Also allow Arrow keys to turn camera if preferred
+      const arrowYaw =
+        (this.keysHeld.has('ArrowLeft') ? 1 : 0) - (this.keysHeld.has('ArrowRight') ? 1 : 0);
+      const arrowPitch =
+        (this.keysHeld.has('ArrowUp') ? 1 : 0) - (this.keysHeld.has('ArrowDown') ? 1 : 0);
+      look.yaw += arrowYaw * 2.4 * dt;
+      look.pitch = Math.max(-1.28, Math.min(1.28, look.pitch + arrowPitch * 1.8 * dt));
     } else if (assignment === 'kb_arrows') {
       const left = this.keysHeld.has('ArrowLeft') ? 1 : 0;
       const right = this.keysHeld.has('ArrowRight') ? 1 : 0;
+      const fwd = this.keysHeld.has('ArrowUp') ? 1 : 0;
+      const back = this.keysHeld.has('ArrowDown') ? 1 : 0;
       frame.moveX = right - left;
-      frame.moveY = this.keysHeld.has('ArrowDown') ? -1 : 0;
-      frame.jumpHeld = this.keysHeld.has('ArrowUp') || this.keysHeld.has('Numpad0');
+      frame.moveZ = fwd - back;
+      frame.jumpHeld = this.keysHeld.has('Numpad0') || this.keysHeld.has('ControlRight');
       frame.jumpJustPressed =
-        this.keysJustPressed.has('ArrowUp') || this.keysJustPressed.has('Numpad0');
+        this.keysJustPressed.has('Numpad0') || this.keysJustPressed.has('ControlRight');
       frame.fireHeld = this.keysHeld.has('Enter') || this.keysHeld.has('Numpad1');
       frame.fireJustPressed =
         this.keysJustPressed.has('Enter') || this.keysJustPressed.has('Numpad1');
@@ -394,15 +446,15 @@ export class InputManager {
       frame.meleeJustPressed =
         this.keysJustPressed.has('Numpad5') || this.keysJustPressed.has('Backslash');
 
-      // Auto-orient aim in movement direction or toward nearest enemy for arrow fallback
-      if (frame.moveX !== 0) {
-        frame.aimAngle = frame.moveX > 0 ? 0 : Math.PI;
-      }
-      const assisted = this.applyAimAssist(player, frame.aimAngle, allPlayers, 0.85);
-      frame.aimAngle = assisted;
+      const turn =
+        (this.keysHeld.has('KeyJ') ? 1 : 0) - (this.keysHeld.has('KeyL') ? 1 : 0);
+      const tilt =
+        (this.keysHeld.has('KeyI') ? 1 : 0) - (this.keysHeld.has('KeyK') ? 1 : 0);
+      look.yaw += turn * 2.6 * dt;
+      look.pitch = Math.max(-1.2, Math.min(1.2, look.pitch + tilt * 2.0 * dt));
     }
 
-    // Check assigned Gamepad OR allow controller #0 to work simultaneously with kb_mouse in 1P
+    // Xbox / Gamepad API (Right Thumbstick rotates camera & 3D look yaw/pitch!)
     const padSlot =
       assignment === 'gamepad_0'
         ? 0
@@ -423,10 +475,15 @@ export class InputManager {
           frame.moveX = Math.sign(lx) * Math.min(1, norm);
         }
         if (Math.abs(ly) > cs.moveDeadZone) {
-          frame.moveY = -Math.sign(ly) * Math.min(1, Math.abs(ly));
+          const norm = (Math.abs(ly) - cs.moveDeadZone) / (1 - cs.moveDeadZone);
+          // Stick Up (negative ly) = Forward (+moveZ)
+          frame.moveZ = -Math.sign(ly) * Math.min(1, norm);
         }
 
-        // Right Stick Dual-Stick Aiming
+        // LT (6): Zoom / Aim precision
+        if (held[6] || (gp.buttons[6]?.value ?? 0) > 0.25) frame.zoomHeld = true;
+
+        // Right Thumbstick: Multi-Axis Camera & Aim Rotation (Left/Right/Up/Down)
         const rawRx = gp.axes[2] || 0;
         const rawRy = (gp.axes[3] || 0) * (cs.invertY ? -1 : 1);
         const mag = Math.hypot(rawRx, rawRy);
@@ -435,23 +492,31 @@ export class InputManager {
             (mag - cs.aimDeadZone) / (1 - cs.aimDeadZone),
             cs.aimAcceleration
           );
-          const zoomMult = held[6] ? cs.zoomSensitivity : 1.0;
-          const ax = (rawRx / mag) * scaledMag * cs.horizontalSensitivity * zoomMult;
-          const ay = (-rawRy / mag) * scaledMag * cs.verticalSensitivity * zoomMult;
-          let targetAngle = Math.atan2(ay, ax);
-          targetAngle = this.applyAimAssist(
-            player,
-            targetAngle,
-            allPlayers,
-            cs.aimAssistStrength
+          const nx = (rawRx / mag) * scaledMag;
+          const ny = (rawRy / mag) * scaledMag;
+          const zoomMult = frame.zoomHeld ? cs.zoomSensitivity : 1.0;
+
+          look.yaw -= nx * 3.1 * cs.horizontalSensitivity * zoomMult * dt;
+          look.pitch = Math.max(
+            -1.28,
+            Math.min(1.28, look.pitch - ny * 2.4 * cs.verticalSensitivity * zoomMult * dt)
           );
-          frame.aimAngle = targetAngle;
-          frame.aimActive = true;
-        } else if (assignment !== 'kb_mouse') {
-          frame.aimAngle = this.lastAimAngle.get(player.id) ?? (frame.moveX < 0 ? Math.PI : 0);
         }
 
-        // Xbox Mapping:
+        // Subtle Aim Assist toward enemy near center reticle when firing/aiming with controller
+        if (cs.aimAssistStrength > 0.02 && (mag > cs.aimDeadZone || held[7] || held[6])) {
+          const assisted = this.applyAimAssist3D(
+            player,
+            look.yaw,
+            look.pitch,
+            allPlayers,
+            cs.aimAssistStrength,
+            dt
+          );
+          look.yaw = assisted.yaw;
+          look.pitch = assisted.pitch;
+        }
+
         // A (0): Jump / Hold Jetpack
         if (held[0]) frame.jumpHeld = true;
         if (just[0]) frame.jumpJustPressed = true;
@@ -468,8 +533,6 @@ export class InputManager {
         if (just[4]) frame.secondaryJustPressed = true;
         // RB (5): Throw Grenade
         if (just[5]) frame.grenadeJustPressed = true;
-        // LT (6): Zoom / Aim precision
-        if (held[6] || (gp.buttons[6]?.value ?? 0) > 0.25) frame.zoomHeld = true;
         // RT (7): Fire weapon
         if (held[7] || (gp.buttons[7]?.value ?? 0) > 0.25) frame.fireHeld = true;
         if (just[7]) frame.fireJustPressed = true;
@@ -488,7 +551,12 @@ export class InputManager {
       }
     }
 
-    this.lastAimAngle.set(player.id, frame.aimAngle);
+    // Wrap yaw cleanly
+    while (look.yaw > Math.PI) look.yaw -= Math.PI * 2;
+    while (look.yaw < -Math.PI) look.yaw += Math.PI * 2;
+
+    frame.aimYaw = look.yaw;
+    frame.aimPitch = look.pitch;
     return { frame, pauseJustPressed, scoreboardHeld };
   }
 
@@ -496,37 +564,55 @@ export class InputManager {
     this.keysJustPressed.clear();
     this.mouseLeftJustPressed = false;
     this.mouseWheelDelta = 0;
+    this.mouseDeltaX = 0;
+    this.mouseDeltaY = 0;
   }
 
-  private applyAimAssist(
+  private applyAimAssist3D(
     player: PlayerState,
-    aimAngle: number,
+    yaw: number,
+    pitch: number,
     allPlayers: PlayerState[],
-    strength: number
-  ): number {
-    if (strength <= 0.02) return aimAngle;
+    strength: number,
+    dt: number
+  ): { yaw: number; pitch: number } {
+    const dir = aimAnglesToVector(yaw, pitch);
     const px = player.x;
     const py = player.y + PLAYER_CENTER_Y;
-    let bestAngle = aimAngle;
-    let bestDiff = 0.34; // ~20 degree cone
+    const pz = player.z;
+
+    let bestDot = 0.94; // ~20 degree cone
+    let bestYaw = yaw;
+    let bestPitch = pitch;
 
     for (const target of allPlayers) {
       if (!target.alive || target.id === player.id) continue;
       if (player.team !== 0 && target.team === player.team) continue;
-      const dist = Math.hypot(target.x - px, target.y + PLAYER_CENTER_Y - py);
-      if (dist > 28) continue;
 
-      const toEnemy = Math.atan2(target.y + PLAYER_CENTER_Y - py, target.x - px);
-      let diff = toEnemy - aimAngle;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
+      const dx = target.x - px;
+      const dy = target.y + PLAYER_CENTER_Y - py;
+      const dz = target.z - pz;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist > 34 || dist < 0.5) continue;
 
-      if (Math.abs(diff) < bestDiff) {
-        bestDiff = Math.abs(diff);
-        bestAngle = aimAngle + diff * strength * 0.45;
+      const dot = (dx * dir.dx + dy * dir.dy + dz * dir.dz) / dist;
+      if (dot > bestDot) {
+        bestDot = dot;
+        bestYaw = Math.atan2(-dx, -dz);
+        const horiz = Math.hypot(dx, dz) || 0.001;
+        bestPitch = Math.atan2(dy, horiz);
       }
     }
-    return bestAngle;
+
+    if (bestDot > 0.94) {
+      let dyaw = bestYaw - yaw;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      const dpitch = bestPitch - pitch;
+      const pull = Math.min(1, strength * 5.5 * dt);
+      return { yaw: yaw + dyaw * pull, pitch: pitch + dpitch * pull };
+    }
+    return { yaw, pitch };
   }
 
   public triggerVibration(

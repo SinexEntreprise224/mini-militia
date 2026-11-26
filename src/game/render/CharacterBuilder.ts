@@ -22,7 +22,7 @@ export interface CharacterRig {
   appearanceKey: string;
 }
 
-function makeMat(hex: string, roughness = 0.6, metalness = 0.15): THREE.MeshStandardMaterial {
+function makeMat(hex: string, roughness = 0.55, metalness = 0.18): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color: new THREE.Color(hex),
     roughness,
@@ -39,23 +39,27 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   const bodyPivot = new THREE.Group();
   root.add(bodyPivot);
 
-  const skinMat = makeMat(appearance.skinColor, 0.72, 0.02);
-  const clothMat = makeMat(appearance.clothingColor, 0.68, 0.12);
-  const accentMat = makeMat(appearance.accentColor, 0.38, 0.55);
-  const pantsMat = makeMat(appearance.pantsColor, 0.75, 0.08);
-  const bootsMat = makeMat(appearance.bootsColor, 0.55, 0.25);
-  const glovesMat = makeMat(appearance.glovesColor, 0.6, 0.18);
-  const hairMat = makeMat(appearance.hairColor, 0.78, 0.05);
-  const headgearMat = makeMat(appearance.headgearColor, 0.4, 0.45);
-  const jetpackMat = makeMat(appearance.jetpackColor, 0.35, 0.68);
-  const darkMetal = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.38, metalness: 0.75 });
+  const skinMat = makeMat(appearance.skinColor, 0.7, 0.03);
+  const clothMat = makeMat(appearance.clothingColor, 0.62, 0.16);
+  const accentMat = makeMat(appearance.accentColor, 0.34, 0.58);
+  const pantsMat = makeMat(appearance.pantsColor, 0.72, 0.1);
+  const bootsMat = makeMat(appearance.bootsColor, 0.48, 0.32);
+  const glovesMat = makeMat(appearance.glovesColor, 0.55, 0.22);
+  const hairMat = makeMat(appearance.hairColor, 0.75, 0.05);
+  const headgearMat = makeMat(appearance.headgearColor, 0.36, 0.48);
+  const jetpackMat = makeMat(appearance.jetpackColor, 0.32, 0.72);
+  const darkMetal = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.34,
+    metalness: 0.78,
+  });
 
-  // Soft ground contact shadow disk
-  const shadowGeo = new THREE.CircleGeometry(0.55, 20);
+  // Ground contact shadow
+  const shadowGeo = new THREE.CircleGeometry(0.58, 22);
   const shadowMat = new THREE.MeshBasicMaterial({
     color: 0x000000,
     transparent: true,
-    opacity: 0.38,
+    opacity: 0.42,
     depthWrite: false,
   });
   const contactShadow = new THREE.Mesh(shadowGeo, shadowMat);
@@ -63,15 +67,15 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   contactShadow.position.y = 0.02;
   root.add(contactShadow);
 
-  // Team / Player identification ring at feet
+  // Team / Player ground aura ring
   const ringColor = team === 1 ? 0x38bdf8 : team === 2 ? 0xf87171 : 0xfacc15;
   const teamRing = new THREE.Mesh(
-    new THREE.RingGeometry(0.46, 0.58, 24),
+    new THREE.RingGeometry(0.47, 0.6, 26),
     new THREE.MeshBasicMaterial({
       color: ringColor,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.78,
       depthWrite: false,
     })
   );
@@ -79,18 +83,18 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   teamRing.position.y = 0.03;
   root.add(teamRing);
 
-  // Legs (hip at y = 0.68, bottom of boot at y = 0)
+  // Articulated Legs
   const buildLeg = (zOffset: number): THREE.Group => {
     const hip = new THREE.Group();
     hip.position.set(0, 0.68, zOffset);
-    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.22, 4, 8), pantsMat);
+    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.22, 4, 8), pantsMat);
     thigh.position.y = -0.2;
-    const knee = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.12, 0.22), darkMetal);
+    const knee = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.12, 0.23), darkMetal);
     knee.position.set(0.02, -0.38, 0);
     const shin = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.2), pantsMat);
     shin.position.y = -0.5;
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.15, 0.23), bootsMat);
-    boot.position.set(0.04, -0.605, 0);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.16, 0.24), bootsMat);
+    boot.position.set(0.04, -0.6, 0);
     hip.add(thigh, knee, shin, boot);
     return hip;
   };
@@ -98,50 +102,49 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   const rightLegPivot = buildLeg(0.14);
   bodyPivot.add(leftLegPivot, rightLegPivot);
 
-  // Torso group (centered around y = 0.96)
+  // Torso
   const torso = new THREE.Group();
   torso.position.set(0, 0.96, 0);
   bodyPivot.add(torso);
 
-  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.56, 0.48), clothMat);
+  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.56, 0.49), clothMat);
   torso.add(chest);
 
-  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.1, 0.51), darkMetal);
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.49, 0.1, 0.52), darkMetal);
   belt.position.y = -0.24;
   torso.add(belt);
   const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.12), accentMat);
-  buckle.position.set(0.23, -0.24, 0);
+  buckle.position.set(0.24, -0.24, 0);
   torso.add(buckle);
 
-  // Jacket style variations
   if (appearance.jacketStyle === 'tactical_vest') {
-    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.49, 0.4, 0.52), accentMat);
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.53), accentMat);
     vest.position.y = 0.04;
     const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.36), darkMetal);
-    pouch.position.set(0.23, -0.06, 0);
+    pouch.position.set(0.24, -0.06, 0);
     torso.add(vest, pouch);
   } else if (appearance.jacketStyle === 'flight_jacket') {
-    const collar = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.12, 0.52), accentMat);
+    const collar = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.12, 0.53), accentMat);
     collar.position.y = 0.26;
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.08, 0.5), accentMat);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.08, 0.51), accentMat);
     stripe.position.y = 0.05;
     torso.add(collar, stripe);
   } else if (appearance.jacketStyle === 'heavy_plate') {
-    const chestPlate = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.44, 0.56), darkMetal);
+    const chestPlate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.44, 0.57), darkMetal);
     chestPlate.position.y = 0.06;
     const coreGlow = new THREE.Mesh(
       new THREE.CylinderGeometry(0.08, 0.08, 0.06, 12),
       new THREE.MeshStandardMaterial({
         color: appearance.accentColor,
         emissive: appearance.accentColor,
-        emissiveIntensity: 1.4,
+        emissiveIntensity: 1.5,
       })
     );
     coreGlow.rotation.z = Math.PI / 2;
-    coreGlow.position.set(0.26, 0.08, 0);
+    coreGlow.position.set(0.27, 0.08, 0);
     torso.add(chestPlate, coreGlow);
   } else {
-    const strap1 = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.54, 0.1), accentMat);
+    const strap1 = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.54, 0.1), accentMat);
     strap1.position.z = 0.14;
     const strap2 = strap1.clone();
     strap2.position.z = -0.14;
@@ -154,7 +157,7 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
     pad.position.set(0, 0.26, 0.32);
     torso.add(pad);
   } else if (appearance.accessory === 'ammo_bandolier') {
-    const band = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.09, 0.54), accentMat);
+    const band = new THREE.Mesh(new THREE.BoxGeometry(0.51, 0.09, 0.55), accentMat);
     band.rotation.z = 0.55;
     torso.add(band);
   } else if (appearance.accessory === 'scarf') {
@@ -173,14 +176,14 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
       new THREE.MeshStandardMaterial({
         color: appearance.accentColor,
         emissive: appearance.accentColor,
-        emissiveIntensity: 1.5,
+        emissiveIntensity: 1.6,
       })
     );
     tip.position.set(-0.28, 0.78, -0.18);
     torso.add(rod, tip);
   }
 
-  // Backpack & Jetpack
+  // Backpack & Jetpack with glowing exhaust rings
   const jetpackGroup = new THREE.Group();
   jetpackGroup.position.set(-0.34, 0.04, 0);
   torso.add(jetpackGroup);
@@ -197,6 +200,17 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   );
   jetpackGroup.add(packMesh);
 
+  const packTrim = new THREE.Mesh(
+    new THREE.BoxGeometry(0.04, packSize[1] * 0.68, packSize[2] * 0.65),
+    new THREE.MeshStandardMaterial({
+      color: appearance.flameColor,
+      emissive: appearance.flameColor,
+      emissiveIntensity: 1.1,
+    })
+  );
+  packTrim.position.set(-packSize[0] * 0.5 - 0.01, 0, 0);
+  jetpackGroup.add(packTrim);
+
   if (appearance.backpackStyle === 'cryo_tank') {
     const tank = new THREE.Mesh(
       new THREE.CylinderGeometry(0.08, 0.08, 0.38, 10),
@@ -206,9 +220,8 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
     jetpackGroup.add(tank);
   }
 
-  // Twin nozzles + optional wings
   if (appearance.jetpackStyle === 'vector_wings') {
-    const wingTop = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.05, 0.85), accentMat);
+    const wingTop = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.05, 0.88), accentMat);
     wingTop.position.set(-0.06, 0.14, 0);
     wingTop.rotation.y = 0.18;
     jetpackGroup.add(wingTop);
@@ -216,8 +229,8 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
 
   const nozzleGeo =
     appearance.jetpackStyle === 'plasma_thruster'
-      ? new THREE.CylinderGeometry(0.065, 0.1, 0.22, 10)
-      : new THREE.CylinderGeometry(0.055, 0.085, 0.24, 10);
+      ? new THREE.CylinderGeometry(0.065, 0.105, 0.22, 10)
+      : new THREE.CylinderGeometry(0.055, 0.09, 0.24, 10);
 
   const nozzleL = new THREE.Mesh(nozzleGeo, darkMetal);
   nozzleL.position.set(-0.06, -0.22, -0.13);
@@ -233,19 +246,19 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
     transparent: true,
     opacity: 0.92,
   });
-  const flameGeo = new THREE.ConeGeometry(0.085, 0.52, 8);
+  const flameGeo = new THREE.ConeGeometry(0.095, 0.58, 10);
   const flameLeft = new THREE.Mesh(flameGeo, flameMat);
   flameLeft.rotation.x = Math.PI;
-  flameLeft.position.set(-0.1, -0.52, -0.13);
+  flameLeft.position.set(-0.11, -0.54, -0.13);
   flameLeft.visible = false;
 
   const flameRight = new THREE.Mesh(flameGeo, flameMat);
   flameRight.rotation.x = Math.PI;
-  flameRight.position.set(-0.1, -0.52, 0.13);
+  flameRight.position.set(-0.11, -0.54, 0.13);
   flameRight.visible = false;
   jetpackGroup.add(flameLeft, flameRight);
 
-  // Head Group (mounted above torso)
+  // Head Group
   const headGroup = new THREE.Group();
   headGroup.position.set(0, 0.52, 0);
   torso.add(headGroup);
@@ -253,7 +266,6 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), skinMat);
   headGroup.add(head);
 
-  // Face details (+X is forward)
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
   const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.07, 0.06), eyeMat);
   eyeL.position.set(0.21, 0.04, -0.09);
@@ -271,7 +283,7 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
       new THREE.MeshStandardMaterial({
         color: 0xef4444,
         emissive: 0xef4444,
-        emissiveIntensity: 1.6,
+        emissiveIntensity: 1.7,
       })
     );
     optic.position.set(0.215, 0.04, 0.09);
@@ -289,7 +301,6 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
     headGroup.add(grin);
   }
 
-  // Hair
   if (appearance.hairStyle === 'crew') {
     const hairTop = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.1, 0.44), hairMat);
     hairTop.position.y = 0.22;
@@ -310,7 +321,6 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
     headGroup.add(top, back);
   }
 
-  // Headgear
   if (appearance.headgear === 'combat_helmet') {
     const dome = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.22, 0.48), headgearMat);
     dome.position.y = 0.18;
@@ -334,7 +344,7 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
       new THREE.MeshStandardMaterial({
         color: 0x38bdf8,
         emissive: 0x0284c7,
-        emissiveIntensity: 0.9,
+        emissiveIntensity: 1.1,
         roughness: 0.15,
         metalness: 0.6,
       })
@@ -347,7 +357,7 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
       new THREE.MeshStandardMaterial({
         color: 0xa855f7,
         emissive: 0x581c87,
-        emissiveIntensity: 0.5,
+        emissiveIntensity: 0.55,
         transparent: true,
         opacity: 0.55,
         roughness: 0.1,
@@ -369,7 +379,7 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
     headGroup.add(band, cup);
   }
 
-  // Back arm
+  // Left support arm
   const backArmPivot = new THREE.Group();
   backArmPivot.position.set(0, 1.15, -0.28);
   const backArm = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.42, 0.16), clothMat);
@@ -379,7 +389,7 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   backArmPivot.add(backArm, backGlove);
   bodyPivot.add(backArmPivot);
 
-  // Aiming Arm & Weapon Mount (at shoulder height y = 1.12)
+  // Right Aiming Arm & Weapon Mount
   const aimPivot = new THREE.Group();
   aimPivot.position.set(0, 1.12, 0.24);
   bodyPivot.add(aimPivot);
@@ -394,12 +404,11 @@ export function buildCharacterRig(appearance: CharacterAppearance, team = 0): Ch
   weaponMount.position.set(0.4, 0.02, -0.14);
   aimPivot.add(weaponMount);
 
-  const defaultWeapon = buildWeaponMesh('pistol');
-  weaponMount.add(defaultWeapon);
+  weaponMount.add(buildWeaponMesh('pistol'));
 
-  // Spawn protection shield bubble
+  // Spawn protection shield
   const shieldBubble = new THREE.Mesh(
-    new THREE.SphereGeometry(1.05, 16, 14),
+    new THREE.SphereGeometry(1.08, 18, 14),
     new THREE.MeshBasicMaterial({
       color: 0x38bdf8,
       transparent: true,
@@ -451,9 +460,8 @@ export function animateCharacterRig(
   rig.root.visible = player.alive;
   if (!player.alive) return;
 
-  rig.root.position.set(player.x, player.y, 0);
+  rig.root.position.set(player.x, player.y, player.z);
 
-  // Swap weapon mesh if equipped weapon changed
   const activeSlot = player.weapons[player.activeSlot];
   const weaponId = activeSlot ? activeSlot.weaponId : 'pistol';
   if (rig.currentWeaponId !== weaponId) {
@@ -464,19 +472,18 @@ export function animateCharacterRig(
     rig.currentWeaponId = weaponId;
   }
 
-  // Flip character facing cleanly in 2.5D (rotate Y between 0 and PI)
-  const targetRotY = player.facing === 1 ? 0 : Math.PI;
-  rig.bodyPivot.rotation.y = THREE.MathUtils.damp(rig.bodyPivot.rotation.y, targetRotY, 22, dt);
-
-  // Compute local aim angle relative to facing direction
-  let localAim = player.aimAngle;
-  if (player.facing === -1) {
-    localAim = Math.PI - player.aimAngle;
+  // Full 360-degree yaw orientation matching aimAnglesToVector (yaw=0 faces -Z)
+  const targetRotY = player.aimYaw + Math.PI * 0.5;
+  let diff = targetRotY - rig.bodyPivot.rotation.y;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  if (dt > 0) {
+    rig.bodyPivot.rotation.y += diff * Math.min(1, dt * 18);
+  } else {
+    rig.bodyPivot.rotation.y = targetRotY;
   }
-  while (localAim > Math.PI) localAim -= Math.PI * 2;
-  while (localAim < -Math.PI) localAim += Math.PI * 2;
 
-  // Melee slash & reload offsets
+  // Pitch aimPivot & weapon in 3D vertical axis
   let armExtraAngle = 0;
   if (player.meleeAnimTimer > 0) {
     const t = player.meleeAnimTimer / 0.24;
@@ -485,40 +492,48 @@ export function animateCharacterRig(
     armExtraAngle = -0.65 + Math.sin(elapsed * 16) * 0.18;
   }
 
-  rig.aimPivot.rotation.z = localAim + armExtraAngle;
+  rig.aimPivot.rotation.z = player.aimPitch + armExtraAngle;
   rig.weaponMount.position.x = 0.4 - player.recoilOffset * 0.35;
 
-  // Procedural legs & torso animation
-  const speedRatio = Math.min(1, Math.abs(player.vx) / 11);
+  // Compute forward & strafe velocity components relative to player gaze
+  const fwdX = -Math.sin(player.aimYaw);
+  const fwdZ = -Math.cos(player.aimYaw);
+  const rightX = Math.cos(player.aimYaw);
+  const rightZ = -Math.sin(player.aimYaw);
+  const forwardVel = player.vx * fwdX + player.vz * fwdZ;
+  const strafeVel = player.vx * rightX + player.vz * rightZ;
+  const horizSpeed = Math.hypot(player.vx, player.vz);
+  const speedRatio = Math.min(1, horizSpeed / 11);
+
   if (player.grounded) {
     if (speedRatio > 0.08) {
       const stridePhase = elapsed * 13 * (0.5 + speedRatio * 0.6);
-      rig.leftLegPivot.rotation.z = Math.sin(stridePhase) * 0.7 * speedRatio;
-      rig.rightLegPivot.rotation.z = -Math.sin(stridePhase) * 0.7 * speedRatio;
+      rig.leftLegPivot.rotation.z = Math.sin(stridePhase) * 0.72 * speedRatio;
+      rig.rightLegPivot.rotation.z = -Math.sin(stridePhase) * 0.72 * speedRatio;
       rig.torso.position.y = 0.96 + Math.abs(Math.cos(stridePhase)) * 0.05 * speedRatio;
-      rig.torso.rotation.z = -0.09 * speedRatio;
+      rig.torso.rotation.z = THREE.MathUtils.clamp(-forwardVel * 0.012, -0.16, 0.14);
+      rig.torso.rotation.x = THREE.MathUtils.clamp(-strafeVel * 0.014, -0.18, 0.18);
       rig.backArmPivot.rotation.z = -Math.sin(stridePhase) * 0.5 * speedRatio;
     } else {
-      // Idle breathing
-      rig.leftLegPivot.rotation.z = THREE.MathUtils.damp(rig.leftLegPivot.rotation.z, 0.06, 14, dt);
-      rig.rightLegPivot.rotation.z = THREE.MathUtils.damp(rig.rightLegPivot.rotation.z, -0.06, 14, dt);
+      rig.leftLegPivot.rotation.z = THREE.MathUtils.damp(rig.leftLegPivot.rotation.z, 0.06, 14, dt || 0.016);
+      rig.rightLegPivot.rotation.z = THREE.MathUtils.damp(rig.rightLegPivot.rotation.z, -0.06, 14, dt || 0.016);
       rig.torso.position.y = 0.96 + Math.sin(elapsed * 3.5) * 0.02;
-      rig.torso.rotation.z = THREE.MathUtils.damp(rig.torso.rotation.z, 0, 14, dt);
-      rig.backArmPivot.rotation.z = THREE.MathUtils.damp(rig.backArmPivot.rotation.z, 0.12, 14, dt);
+      rig.torso.rotation.z = THREE.MathUtils.damp(rig.torso.rotation.z, 0, 14, dt || 0.016);
+      rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, 0, 14, dt || 0.016);
+      rig.backArmPivot.rotation.z = THREE.MathUtils.damp(rig.backArmPivot.rotation.z, 0.12, 14, dt || 0.016);
     }
   } else {
-    // Airborne / Jetpack posture
-    const tilt = THREE.MathUtils.clamp(-player.vx * 0.025 * player.facing, -0.32, 0.32);
-    rig.torso.rotation.z = THREE.MathUtils.damp(rig.torso.rotation.z, tilt, 10, dt);
-    rig.leftLegPivot.rotation.z = THREE.MathUtils.damp(rig.leftLegPivot.rotation.z, -0.35, 10, dt);
-    rig.rightLegPivot.rotation.z = THREE.MathUtils.damp(rig.rightLegPivot.rotation.z, 0.25, 10, dt);
-    rig.backArmPivot.rotation.z = THREE.MathUtils.damp(rig.backArmPivot.rotation.z, -0.45, 10, dt);
+    const pitchTilt = THREE.MathUtils.clamp(-forwardVel * 0.025, -0.35, 0.25);
+    const bankTilt = THREE.MathUtils.clamp(-strafeVel * 0.025, -0.32, 0.32);
+    rig.torso.rotation.z = THREE.MathUtils.damp(rig.torso.rotation.z, pitchTilt, 10, dt || 0.016);
+    rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, bankTilt, 10, dt || 0.016);
+    rig.leftLegPivot.rotation.z = THREE.MathUtils.damp(rig.leftLegPivot.rotation.z, -0.35, 10, dt || 0.016);
+    rig.rightLegPivot.rotation.z = THREE.MathUtils.damp(rig.rightLegPivot.rotation.z, 0.25, 10, dt || 0.016);
+    rig.backArmPivot.rotation.z = THREE.MathUtils.damp(rig.backArmPivot.rotation.z, -0.45, 10, dt || 0.016);
   }
 
-  // Head slight tracking toward aim
-  rig.headGroup.rotation.z = THREE.MathUtils.clamp(localAim * 0.35, -0.35, 0.35);
+  rig.headGroup.rotation.z = THREE.MathUtils.clamp(player.aimPitch * 0.45, -0.42, 0.42);
 
-  // Jetpack flames
   rig.flameLeft.visible = player.jetpackActive;
   rig.flameRight.visible = player.jetpackActive;
   if (player.jetpackActive) {
@@ -527,7 +542,6 @@ export function animateCharacterRig(
     rig.flameRight.scale.set(1, flicker * 0.95, 1);
   }
 
-  // Spawn protection shield & hit flash
   rig.shieldBubble.visible = player.spawnProtectionTimer > 0;
   if (rig.shieldBubble.visible) {
     rig.shieldBubble.rotation.y += dt * 2.5;

@@ -18,11 +18,6 @@ import { buildFlagMesh, buildMapSceneGeometry } from './MapBuilder';
 import { EffectsPool } from './ParticlePool';
 import { buildGrenadeMesh, buildPickupPedestalMesh } from './WeaponBuilder';
 
-const _raycaster = new THREE.Raycaster();
-const _ndc = new THREE.Vector2();
-const _playPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-const _intersectPt = new THREE.Vector3();
-
 export function detectSoftwareWebGL(): boolean {
   const gl = document.createElement('canvas').getContext('webgl2');
   if (!gl) return true;
@@ -31,6 +26,11 @@ export function detectSoftwareWebGL(): boolean {
   const gpu = String(gl.getParameter(param));
   gl.getExtension('WEBGL_lose_context')?.loseContext();
   return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+}
+
+interface FlashLightSlot {
+  light: THREE.PointLight;
+  life: number;
 }
 
 export class ArenaRenderer {
@@ -43,6 +43,7 @@ export class ArenaRenderer {
   private keyLight: THREE.DirectionalLight;
   private hemiLight: THREE.HemisphereLight;
   private rimLight: THREE.DirectionalLight;
+  private flashLights: FlashLightSlot[] = [];
 
   private mapGroup: THREE.Group | null = null;
   private animatedProps: THREE.Object3D[] = [];
@@ -68,7 +69,7 @@ export class ArenaRenderer {
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.14;
     this.renderer.setPixelRatio(
       this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2)
     );
@@ -80,7 +81,6 @@ export class ArenaRenderer {
 
     this.scene = new THREE.Scene();
 
-    // Studio Environment Map (RoomEnvironment)
     const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmremGenerator.fromScene(
       new RoomEnvironment(),
@@ -89,27 +89,34 @@ export class ArenaRenderer {
     pmremGenerator.dispose();
 
     // Three-point warm/cool lighting rig
-    this.hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x334155, 0.85);
+    this.hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x334155, 0.9);
     this.scene.add(this.hemiLight);
 
-    this.keyLight = new THREE.DirectionalLight(0xfff4e0, 2.2);
-    this.keyLight.position.set(16, 32, 24);
+    this.keyLight = new THREE.DirectionalLight(0xfff4e0, 2.3);
+    this.keyLight.position.set(22, 38, 26);
     this.keyLight.castShadow = !this.isSoftwareGl;
-    this.keyLight.shadow.mapSize.set(1024, 1024);
+    this.keyLight.shadow.mapSize.set(2048, 2048);
     this.keyLight.shadow.camera.near = 2;
-    this.keyLight.shadow.camera.far = 90;
-    const d = 42;
+    this.keyLight.shadow.camera.far = 110;
+    const d = 44;
     this.keyLight.shadow.camera.left = -d;
     this.keyLight.shadow.camera.right = d;
-    this.keyLight.shadow.camera.top = 30;
-    this.keyLight.shadow.camera.bottom = -12;
+    this.keyLight.shadow.camera.top = d;
+    this.keyLight.shadow.camera.bottom = -d;
     this.keyLight.shadow.bias = -0.0005;
     this.keyLight.shadow.normalBias = 0.02;
     this.scene.add(this.keyLight);
 
-    this.rimLight = new THREE.DirectionalLight(0x60a5fa, 0.7);
-    this.rimLight.position.set(-18, 12, -20);
+    this.rimLight = new THREE.DirectionalLight(0x60a5fa, 0.85);
+    this.rimLight.position.set(-24, 16, -24);
     this.scene.add(this.rimLight);
+
+    // Pooled dynamic point lights for weapon muzzle flashes & blasts
+    for (let i = 0; i < 3; i++) {
+      const light = new THREE.PointLight(0xfde047, 0, 14, 2);
+      this.scene.add(light);
+      this.flashLights.push({ light, life: 0 });
+    }
 
     this.cameras = new CameraSystem(this.width / Math.max(1, this.height));
     this.effects = new EffectsPool(this.scene);
@@ -172,10 +179,9 @@ export class ArenaRenderer {
     this.animatedProps = built.animatedProps;
     this.scene.add(this.mapGroup);
 
-    // Create pickup pedestals
     for (const sp of map.pickupSpawns) {
       const pk = buildPickupPedestalMesh(sp.kind, sp.weaponId);
-      pk.position.set(sp.x, sp.y - 0.5, 0);
+      pk.position.set(sp.x, sp.y - 0.5, sp.z);
       this.scene.add(pk);
       this.pickupMeshes.set(sp.id, pk);
     }
@@ -183,6 +189,21 @@ export class ArenaRenderer {
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.cameras.camP1);
     }
+  }
+
+  private triggerFlashLight(x: number, y: number, z: number, colorHex: string, intensity: number, dur: number): void {
+    let slot = this.flashLights[0];
+    for (const fl of this.flashLights) {
+      if (fl.life <= 0) {
+        slot = fl;
+        break;
+      }
+      if (fl.life < slot.life) slot = fl;
+    }
+    slot.light.position.set(x, y, z);
+    slot.light.color.set(colorHex);
+    slot.light.intensity = intensity;
+    slot.life = dur;
   }
 
   public renderTitleShowcase(mapId: MapId, elapsed: number): void {
@@ -195,13 +216,19 @@ export class ArenaRenderer {
     this.renderer.setViewport(0, 0, this.width, this.height);
 
     this.cameras.camP1.aspect = this.width / Math.max(1, this.height);
+    if (this.cameras.camP1.fov !== 56) {
+      this.cameras.camP1.fov = 56;
+    }
     this.cameras.camP1.updateProjectionMatrix();
+
+    // Smooth 360-degree elevated orbital showcase sweep across the 3D arena
+    const orbitAngle = elapsed * 0.16;
     this.cameras.camP1.position.set(
-      Math.sin(elapsed * 0.22) * 14,
-      10 + Math.sin(elapsed * 0.35) * 2.5,
-      27 + Math.cos(elapsed * 0.2) * 4
+      Math.sin(orbitAngle) * 21,
+      11.5 + Math.sin(elapsed * 0.4) * 2.5,
+      Math.cos(orbitAngle) * 18
     );
-    this.cameras.camP1.lookAt(0, 8, 0);
+    this.cameras.camP1.lookAt(0, 5.5, 0);
 
     this.animateEnvironment(elapsed, 0.016);
     this.renderer.render(this.scene, this.cameras.camP1);
@@ -217,7 +244,7 @@ export class ArenaRenderer {
     this.loadMap(snapshot.mapId);
     const map: MapData = MAPS[snapshot.mapId];
 
-    // Sync characters
+    // Sync characters in full 3D
     const activeIds = new Set<string>();
     for (const p of snapshot.players) {
       activeIds.add(p.id);
@@ -231,12 +258,10 @@ export class ArenaRenderer {
       }
       animateCharacterRig(rig, p, snapshot.elapsed, dt);
 
-      if (p.alive && p.jetpackActive && Math.random() < 0.75) {
-        this.effects.spawnJetpackExhaust(
-          p.x - p.facing * 0.35,
-          p.y + 0.45,
-          p.appearance.flameColor
-        );
+      if (p.alive && p.jetpackActive && Math.random() < 0.78) {
+        const backX = p.x + Math.sin(p.aimYaw) * 0.36;
+        const backZ = p.z + Math.cos(p.aimYaw) * 0.36;
+        this.effects.spawnJetpackExhaust(backX, p.y + 0.52, backZ, p.appearance.flameColor);
       }
     }
     for (const [id, rig] of this.characterRigs.entries()) {
@@ -246,7 +271,7 @@ export class ArenaRenderer {
       }
     }
 
-    // Sync pickups
+    // Sync pickups in 3D
     for (const pk of snapshot.pickups) {
       const mesh = this.pickupMeshes.get(pk.id);
       if (!mesh) continue;
@@ -254,11 +279,11 @@ export class ArenaRenderer {
       if (floatItem) {
         floatItem.visible = pk.available;
         floatItem.rotation.y = snapshot.elapsed * 1.8;
-        floatItem.position.y = 0.72 + Math.sin(snapshot.elapsed * 3.2 + pk.x) * 0.12;
+        floatItem.position.y = 0.72 + Math.sin(snapshot.elapsed * 3.2 + pk.x + pk.z) * 0.12;
       }
     }
 
-    // Sync grenades
+    // Sync grenades in 3D
     const activeGrenades = new Set<number>();
     for (const g of snapshot.grenades) {
       activeGrenades.add(g.id);
@@ -268,8 +293,11 @@ export class ArenaRenderer {
         this.scene.add(gm);
         this.grenadeMeshes.set(g.id, gm);
       }
-      gm.position.set(g.x, g.y, 0);
-      if (g.type !== 'proximity') gm.rotation.z -= dt * 8;
+      gm.position.set(g.x, g.y, g.z);
+      if (g.type !== 'proximity') {
+        gm.rotation.z -= dt * 8;
+        gm.rotation.x += dt * 5;
+      }
     }
     for (const [gid, gm] of this.grenadeMeshes.entries()) {
       if (!activeGrenades.has(gid)) {
@@ -278,14 +306,14 @@ export class ArenaRenderer {
       }
     }
 
-    // Sync incendiary hazard zones
+    // Sync incendiary hazard zones in 3D
     const activeHazards = new Set<number>();
     for (const hz of snapshot.hazardZones) {
       activeHazards.add(hz.id);
       let hm = this.hazardMeshes.get(hz.id);
       if (!hm) {
         hm = new THREE.Mesh(
-          new THREE.SphereGeometry(hz.radius, 16, 12),
+          new THREE.SphereGeometry(hz.radius, 18, 12),
           new THREE.MeshBasicMaterial({
             color: 0xf97316,
             transparent: true,
@@ -296,7 +324,7 @@ export class ArenaRenderer {
         this.scene.add(hm);
         this.hazardMeshes.set(hz.id, hm);
       }
-      hm.position.set(hz.x, hz.y, 0);
+      hm.position.set(hz.x, hz.y, hz.z);
       hm.rotation.y += dt * 3;
       const pulse = 0.92 + Math.sin(snapshot.elapsed * 14) * 0.08;
       hm.scale.setScalar(pulse);
@@ -310,13 +338,37 @@ export class ArenaRenderer {
       }
     }
 
-    // Sync CTF flags
+    // Sync CTF flags in 3D
     const showFlags = snapshot.mode === 'ctf';
     this.flagMeshes.team1.visible = showFlags;
     this.flagMeshes.team2.visible = showFlags;
     if (showFlags) {
-      this.flagMeshes.team1.position.set(snapshot.flags.team1.x, snapshot.flags.team1.y - 0.5, 0.35);
-      this.flagMeshes.team2.position.set(snapshot.flags.team2.x, snapshot.flags.team2.y - 0.5, 0.35);
+      this.flagMeshes.team1.position.set(
+        snapshot.flags.team1.x,
+        snapshot.flags.team1.y - 0.5,
+        snapshot.flags.team1.z
+      );
+      this.flagMeshes.team2.position.set(
+        snapshot.flags.team2.x,
+        snapshot.flags.team2.y - 0.5,
+        snapshot.flags.team2.z
+      );
+    }
+
+    // Dynamic flash lights on gunfire & explosions
+    for (const ev of snapshot.particleEvents) {
+      if (ev.type === 'muzzle') {
+        this.triggerFlashLight(ev.x, ev.y, ev.z, ev.color || '#fde047', 6.5, 0.07);
+      } else if (ev.type === 'explosion') {
+        this.triggerFlashLight(ev.x, ev.y, ev.z, ev.color || '#f97316', 18, 0.22);
+      }
+    }
+    for (const fl of this.flashLights) {
+      if (fl.life > 0) {
+        fl.life -= dt;
+        if (fl.life <= 0) fl.light.intensity = 0;
+        else fl.light.intensity *= 0.84;
+      }
     }
 
     // Particles & Projectiles
@@ -324,7 +376,7 @@ export class ArenaRenderer {
     this.effects.update(dt, snapshot.projectiles);
     this.animateEnvironment(snapshot.elapsed, dt);
 
-    // Update Camera(s) & Render (single or dynamic split-screen)
+    // Update 3D Camera(s) & Render (single or dynamic split-screen)
     this.cameras.update(
       snapshot.players,
       map,
@@ -345,21 +397,17 @@ export class ArenaRenderer {
       this.renderer.setScissorTest(true);
       if (splitOrientation === 'vertical') {
         const halfW = Math.floor(this.width * 0.5);
-        // P1 Left
         this.renderer.setViewport(0, 0, halfW, this.height);
         this.renderer.setScissor(0, 0, halfW, this.height);
         this.renderer.render(this.scene, this.cameras.camP1);
-        // P2 Right
         this.renderer.setViewport(halfW, 0, this.width - halfW, this.height);
         this.renderer.setScissor(halfW, 0, this.width - halfW, this.height);
         this.renderer.render(this.scene, this.cameras.camP2);
       } else {
         const halfH = Math.floor(this.height * 0.5);
-        // P1 Top (WebGL Y=0 is bottom!)
         this.renderer.setViewport(0, halfH, this.width, this.height - halfH);
         this.renderer.setScissor(0, halfH, this.width, this.height - halfH);
         this.renderer.render(this.scene, this.cameras.camP1);
-        // P2 Bottom
         this.renderer.setViewport(0, 0, this.width, halfH);
         this.renderer.setScissor(0, 0, this.width, halfH);
         this.renderer.render(this.scene, this.cameras.camP2);
@@ -369,8 +417,9 @@ export class ArenaRenderer {
 
   private animateEnvironment(elapsed: number, dt: number): void {
     for (const obj of this.animatedProps) {
-      obj.rotation.z += dt * 0.28;
-      obj.position.y += Math.sin(elapsed * 1.4 + obj.position.x) * dt * 0.15;
+      obj.rotation.z += dt * 0.25;
+      obj.rotation.y += dt * 0.14;
+      obj.position.y += Math.sin(elapsed * 1.4 + obj.position.x) * dt * 0.14;
     }
     for (const pk of this.pickupMeshes.values()) {
       const floatItem = pk.getObjectByName('floatingItem');
@@ -378,39 +427,6 @@ export class ArenaRenderer {
         floatItem.rotation.y = elapsed * 1.8;
       }
     }
-  }
-
-  public screenToWorldAim(
-    screenX: number,
-    screenY: number,
-    playerX: number,
-    playerY: number,
-    splitOrientation: 'vertical' | 'horizontal'
-  ): number {
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    let vx = screenX - rect.left;
-    let vy = screenY - rect.top;
-    let vw = rect.width || 1;
-    let vh = rect.height || 1;
-
-    // If split screen active and P1 uses mouse, map into P1's viewport
-    if (this.cameras.isSplitScreenActive()) {
-      if (splitOrientation === 'vertical') {
-        vw = rect.width * 0.5;
-        vx = Math.min(vw, Math.max(0, vx));
-      } else {
-        vh = rect.height * 0.5;
-        vy = Math.min(vh, Math.max(0, vy));
-      }
-    }
-
-    _ndc.x = (vx / vw) * 2 - 1;
-    _ndc.y = -(vy / vh) * 2 + 1;
-    _raycaster.setFromCamera(_ndc, this.cameras.camP1);
-    if (_raycaster.ray.intersectPlane(_playPlane, _intersectPt)) {
-      return Math.atan2(_intersectPt.y - playerY, _intersectPt.x - playerX);
-    }
-    return 0;
   }
 
   public dispose(): void {

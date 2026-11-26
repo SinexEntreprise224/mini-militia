@@ -12,34 +12,39 @@ interface ActiveParticle {
   life: number;
   maxLife: number;
   size: number;
+  gravity: number;
   color: THREE.Color;
 }
 
-interface ActiveRing {
-  mesh: THREE.Mesh;
+interface ActiveBlast {
+  ring: THREE.Mesh;
+  core: THREE.Mesh;
   life: number;
   maxLife: number;
   maxRadius: number;
 }
 
-const MAX_PARTICLES = 260;
-const MAX_PROJECTILES = 140;
-const MAX_RINGS = 16;
+const MAX_PARTICLES = 380;
+const MAX_PROJECTILES = 160;
+const MAX_BLASTS = 18;
 
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
+const _fwd = new THREE.Vector3(0, 0, 1);
+const _dir = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
 
 export class EffectsPool {
   private particleMesh: THREE.InstancedMesh;
   private particles: ActiveParticle[] = [];
 
   private projectileMesh: THREE.InstancedMesh;
-  private rings: ActiveRing[] = [];
+  private blasts: ActiveBlast[] = [];
   private group = new THREE.Group();
 
   constructor(scene: THREE.Scene) {
-    // Pooled particle cubes/sparks
-    const pGeo = new THREE.BoxGeometry(0.18, 0.18, 0.18);
+    // Pooled 3D particle sparks & smoke cubes
+    const pGeo = new THREE.IcosahedronGeometry(0.12, 0);
     const pMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     this.particleMesh = new THREE.InstancedMesh(pGeo, pMat, MAX_PARTICLES);
     this.particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -57,14 +62,15 @@ export class EffectsPool {
         life: 0,
         maxLife: 1,
         size: 1,
+        gravity: 9.5,
         color: new THREE.Color(0xffffff),
       });
       this.particleMesh.setColorAt(i, _color);
     }
     this.group.add(this.particleMesh);
 
-    // Pooled projectile tracer bolts
-    const bGeo = new THREE.BoxGeometry(0.55, 0.11, 0.11);
+    // Pooled 3D projectile tracer bolts (+Z aligned for quaternion look direction)
+    const bGeo = new THREE.BoxGeometry(0.11, 0.11, 0.72);
     const bMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     this.projectileMesh = new THREE.InstancedMesh(bGeo, bMat, MAX_PROJECTILES);
     this.projectileMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -78,20 +84,31 @@ export class EffectsPool {
     }
     this.group.add(this.projectileMesh);
 
-    // Pooled shockwave rings
-    const ringGeo = new THREE.RingGeometry(0.75, 1.0, 24);
-    for (let i = 0; i < MAX_RINGS; i++) {
-      const mat = new THREE.MeshBasicMaterial({
+    // Pooled 3D explosion shockwave rings & flash cores
+    const ringGeo = new THREE.TorusGeometry(0.88, 0.09, 8, 24);
+    const coreGeo = new THREE.SphereGeometry(0.6, 12, 10);
+    for (let i = 0; i < MAX_BLASTS; i++) {
+      const rMat = new THREE.MeshBasicMaterial({
         color: 0xf97316,
-        side: THREE.DoubleSide,
         transparent: true,
         opacity: 0,
         depthWrite: false,
       });
-      const mesh = new THREE.Mesh(ringGeo, mat);
-      mesh.visible = false;
-      this.group.add(mesh);
-      this.rings.push({ mesh, life: 0, maxLife: 0.35, maxRadius: 4 });
+      const ring = new THREE.Mesh(ringGeo, rMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.visible = false;
+
+      const cMat = new THREE.MeshBasicMaterial({
+        color: 0xfef08a,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const core = new THREE.Mesh(coreGeo, cMat);
+      core.visible = false;
+
+      this.group.add(ring, core);
+      this.blasts.push({ ring, core, life: 0, maxLife: 0.36, maxRadius: 4 });
     }
 
     scene.add(this.group);
@@ -100,55 +117,61 @@ export class EffectsPool {
   public emitEvents(events: ParticleEvent[]): void {
     for (const ev of events) {
       if (ev.type === 'muzzle') {
-        this.spawnBurst(ev.x, ev.y, 4, 4.5, 0.14, 0.9, ev.color || '#fde047');
+        this.spawnBurst3D(ev.x, ev.y, ev.z, 6, 5.2, 0.14, 0.95, ev.color || '#fde047', 1.5);
       } else if (ev.type === 'impact' || ev.type === 'hit_spark') {
-        this.spawnBurst(ev.x, ev.y, 7, 6.5, 0.24, 1.0, ev.color || '#facc15');
+        this.spawnBurst3D(ev.x, ev.y, ev.z, 9, 7.0, 0.26, 1.05, ev.color || '#facc15', 11.0);
       } else if (ev.type === 'explosion' || ev.type === 'fire_burst') {
-        this.spawnBurst(ev.x, ev.y, 24, 13.0, 0.48, 2.2, ev.color || '#f97316');
-        this.spawnRing(ev.x, ev.y, ev.radius || 4.0, ev.color || '#f97316');
+        this.spawnBurst3D(ev.x, ev.y, ev.z, 28, 13.5, 0.52, 2.3, ev.color || '#f97316', 7.5);
+        this.spawnBlast3D(ev.x, ev.y, ev.z, ev.radius || 4.0, ev.color || '#f97316');
       } else if (ev.type === 'pickup' || ev.type === 'respawn') {
-        this.spawnBurst(ev.x, ev.y, 12, 5.5, 0.4, 1.3, ev.color || '#38bdf8');
+        this.spawnBurst3D(ev.x, ev.y, ev.z, 14, 5.8, 0.42, 1.3, ev.color || '#38bdf8', -1.8);
       } else if (ev.type === 'melee_slash') {
-        this.spawnBurst(ev.x, ev.y, 10, 7.5, 0.22, 1.4, ev.color || '#e879f9');
+        this.spawnBurst3D(ev.x, ev.y, ev.z, 12, 8.0, 0.22, 1.4, ev.color || '#e879f9', 2.0);
       }
     }
   }
 
-  public spawnJetpackExhaust(x: number, y: number, colorHex: string): void {
+  public spawnJetpackExhaust(x: number, y: number, z: number, colorHex: string): void {
     this.spawnSingle(
-      x + (Math.random() - 0.5) * 0.2,
+      x + (Math.random() - 0.5) * 0.28,
       y,
-      (Math.random() - 0.5) * 0.25,
-      (Math.random() - 0.5) * 1.4,
-      -4.5 - Math.random() * 2.5,
-      0,
-      0.24,
-      1.1,
+      z + (Math.random() - 0.5) * 0.28,
+      (Math.random() - 0.5) * 1.6,
+      -4.8 - Math.random() * 2.6,
+      (Math.random() - 0.5) * 1.6,
+      0.26,
+      1.15,
+      -1.0,
       colorHex
     );
   }
 
-  private spawnBurst(
+  private spawnBurst3D(
     x: number,
     y: number,
+    z: number,
     count: number,
     speed: number,
     life: number,
     size: number,
-    colorHex: string
+    colorHex: string,
+    gravity: number
   ): void {
     for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
       const spd = speed * (0.35 + Math.random() * 0.65);
+      const sp = Math.sin(phi);
       this.spawnSingle(
         x,
         y,
-        (Math.random() - 0.5) * 0.3,
-        Math.cos(ang) * spd,
-        Math.sin(ang) * spd,
-        (Math.random() - 0.5) * spd * 0.35,
+        z,
+        Math.cos(theta) * sp * spd,
+        Math.cos(phi) * spd,
+        Math.sin(theta) * sp * spd,
         life * (0.7 + Math.random() * 0.5),
         size,
+        gravity,
         colorHex
       );
     }
@@ -163,6 +186,7 @@ export class EffectsPool {
     vz: number,
     life: number,
     size: number,
+    gravity: number,
     colorHex: string
   ): void {
     for (let i = 0; i < MAX_PARTICLES; i++) {
@@ -178,22 +202,28 @@ export class EffectsPool {
         p.life = life;
         p.maxLife = life;
         p.size = size;
+        p.gravity = gravity;
         p.color.set(colorHex);
         return;
       }
     }
   }
 
-  private spawnRing(x: number, y: number, maxRadius: number, colorHex: string): void {
-    for (const r of this.rings) {
-      if (r.life <= 0) {
-        r.life = 0.35;
-        r.maxLife = 0.35;
-        r.maxRadius = maxRadius;
-        r.mesh.position.set(x, y, 0.2);
-        r.mesh.scale.setScalar(0.2);
-        (r.mesh.material as THREE.MeshBasicMaterial).color.set(colorHex);
-        r.mesh.visible = true;
+  private spawnBlast3D(x: number, y: number, z: number, maxRadius: number, colorHex: string): void {
+    for (const b of this.blasts) {
+      if (b.life <= 0) {
+        b.life = 0.36;
+        b.maxLife = 0.36;
+        b.maxRadius = maxRadius;
+        b.ring.position.set(x, y + 0.08, z);
+        b.ring.scale.setScalar(0.2);
+        (b.ring.material as THREE.MeshBasicMaterial).color.set(colorHex);
+        b.ring.visible = true;
+
+        b.core.position.set(x, y, z);
+        b.core.scale.setScalar(0.35);
+        (b.core.material as THREE.MeshBasicMaterial).color.set(colorHex);
+        b.core.visible = true;
         return;
       }
     }
@@ -222,11 +252,11 @@ export class EffectsPool {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.z += p.vz * dt;
-      p.vy -= 9.5 * dt;
+      p.vy -= p.gravity * dt;
 
       const s = p.size * (p.life / p.maxLife);
       _dummy.position.set(p.x, p.y, p.z);
-      _dummy.rotation.set(p.life * 6, p.life * 4, 0);
+      _dummy.rotation.set(p.life * 7, p.life * 5, p.life * 3);
       _dummy.scale.setScalar(s);
       _dummy.updateMatrix();
       this.particleMesh.setMatrixAt(i, _dummy.matrix);
@@ -235,17 +265,23 @@ export class EffectsPool {
     this.particleMesh.instanceMatrix.needsUpdate = true;
     if (this.particleMesh.instanceColor) this.particleMesh.instanceColor.needsUpdate = true;
 
-    // Update projectile instances
+    // Update 3D projectile instances oriented along 3D velocity vector
     const projCount = Math.min(projectiles.length, MAX_PROJECTILES);
     for (let i = 0; i < MAX_PROJECTILES; i++) {
       if (i < projCount) {
         const pr = projectiles[i];
-        const angle = Math.atan2(pr.vy, pr.vx);
-        _dummy.position.set(pr.x, pr.y, 0);
-        _dummy.rotation.set(0, 0, angle);
-        const scaleX = pr.weaponId === 'rocket_launcher' ? 1.7 : pr.weaponId === 'sniper' ? 2.2 : 1.0;
-        const scaleY = pr.weaponId === 'rocket_launcher' ? 2.2 : pr.isEnergy ? 1.6 : 1.0;
-        _dummy.scale.set(scaleX, scaleY, scaleY);
+        _dir.set(pr.vx, pr.vy, pr.vz);
+        if (_dir.lengthSq() > 0.0001) {
+          _dir.normalize();
+          _quat.setFromUnitVectors(_fwd, _dir);
+        } else {
+          _quat.identity();
+        }
+        _dummy.position.set(pr.x, pr.y, pr.z);
+        _dummy.quaternion.copy(_quat);
+        const lenScale = pr.weaponId === 'rocket_launcher' ? 1.8 : pr.weaponId === 'sniper' ? 2.4 : 1.0;
+        const thickScale = pr.weaponId === 'rocket_launcher' ? 2.2 : pr.isEnergy ? 1.55 : 1.0;
+        _dummy.scale.set(thickScale, thickScale, lenScale);
         _dummy.updateMatrix();
         _color.set(pr.color);
         this.projectileMesh.setMatrixAt(i, _dummy.matrix);
@@ -260,14 +296,19 @@ export class EffectsPool {
     this.projectileMesh.instanceMatrix.needsUpdate = true;
     if (this.projectileMesh.instanceColor) this.projectileMesh.instanceColor.needsUpdate = true;
 
-    // Update rings
-    for (const r of this.rings) {
-      if (r.life > 0) {
-        r.life -= dt;
-        const progress = 1 - Math.max(0, r.life) / r.maxLife;
-        r.mesh.scale.setScalar(0.3 + progress * r.maxRadius);
-        (r.mesh.material as THREE.MeshBasicMaterial).opacity = (1 - progress) * 0.85;
-        if (r.life <= 0) r.mesh.visible = false;
+    // Update 3D blasts
+    for (const b of this.blasts) {
+      if (b.life > 0) {
+        b.life -= dt;
+        const progress = 1 - Math.max(0, b.life) / b.maxLife;
+        b.ring.scale.setScalar(0.3 + progress * b.maxRadius);
+        (b.ring.material as THREE.MeshBasicMaterial).opacity = (1 - progress) * 0.85;
+        b.core.scale.setScalar(0.35 + progress * (b.maxRadius * 0.55));
+        (b.core.material as THREE.MeshBasicMaterial).opacity = (1 - progress) * 0.55;
+        if (b.life <= 0) {
+          b.ring.visible = false;
+          b.core.visible = false;
+        }
       }
     }
   }
@@ -277,5 +318,11 @@ export class EffectsPool {
     (this.particleMesh.material as THREE.Material).dispose();
     this.projectileMesh.geometry.dispose();
     (this.projectileMesh.material as THREE.Material).dispose();
+    for (const b of this.blasts) {
+      b.ring.geometry.dispose();
+      (b.ring.material as THREE.Material).dispose();
+      b.core.geometry.dispose();
+      (b.core.material as THREE.Material).dispose();
+    }
   }
 }

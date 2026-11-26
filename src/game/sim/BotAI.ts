@@ -9,26 +9,30 @@ import {
   PlayerState,
   ProjectileState,
 } from '../types';
-import { hasLineOfSight, PLAYER_CENTER_Y } from './Physics';
+import { hasLineOfSight3D, PLAYER_CENTER_Y } from './Physics';
 
 interface BotBrain {
-  wanderDir: 1 | -1;
+  strafeDir: 1 | -1;
   wanderTimer: number;
   dodgeTimer: number;
   dodgeDir: number;
   jetPulseTimer: number;
-  targetAngle: number;
-  reactionCooldown: number;
 }
 
 const DIFFICULTY_PARAMS: Record<
   BotDifficulty,
-  { aimError: number; reactionSpeed: number; leadFactor: number; dodgeChance: number; jetSkill: number }
+  { aimError: number; turnSpeed: number; leadFactor: number; dodgeChance: number; jetSkill: number }
 > = {
-  easy: { aimError: 0.24, reactionSpeed: 0.08, leadFactor: 0.25, dodgeChance: 0.15, jetSkill: 0.45 },
-  normal: { aimError: 0.11, reactionSpeed: 0.16, leadFactor: 0.65, dodgeChance: 0.48, jetSkill: 0.75 },
-  hard: { aimError: 0.035, reactionSpeed: 0.28, leadFactor: 0.95, dodgeChance: 0.85, jetSkill: 0.98 },
+  easy: { aimError: 0.22, turnSpeed: 4.5, leadFactor: 0.25, dodgeChance: 0.15, jetSkill: 0.45 },
+  normal: { aimError: 0.09, turnSpeed: 7.5, leadFactor: 0.65, dodgeChance: 0.48, jetSkill: 0.75 },
+  hard: { aimError: 0.03, turnSpeed: 12.0, leadFactor: 0.95, dodgeChance: 0.85, jetSkill: 0.98 },
 };
+
+function wrapAngle(a: number): number {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
 
 export class BotAIController {
   private brains = new Map<string, BotBrain>();
@@ -37,13 +41,11 @@ export class BotAIController {
     let b = this.brains.get(id);
     if (!b) {
       b = {
-        wanderDir: Math.random() > 0.5 ? 1 : -1,
+        strafeDir: Math.random() > 0.5 ? 1 : -1,
         wanderTimer: 1.5,
         dodgeTimer: 0,
         dodgeDir: 0,
         jetPulseTimer: 0,
-        targetAngle: 0,
-        reactionCooldown: 0,
       };
       this.brains.set(id, b);
     }
@@ -66,14 +68,13 @@ export class BotAIController {
     brain.wanderTimer -= dt;
     brain.dodgeTimer = Math.max(0, brain.dodgeTimer - dt);
     brain.jetPulseTimer = Math.max(0, brain.jetPulseTimer - dt);
-    brain.reactionCooldown = Math.max(0, brain.reactionCooldown - dt);
 
     const input: PlayerInputFrame = {
       playerId: bot.id,
       moveX: 0,
-      moveY: 0,
-      aimAngle: bot.aimAngle,
-      aimActive: true,
+      moveZ: 0,
+      aimYaw: bot.aimYaw,
+      aimPitch: bot.aimPitch,
       jumpHeld: false,
       jumpJustPressed: false,
       fireHeld: false,
@@ -91,194 +92,218 @@ export class BotAIController {
 
     if (!bot.alive) return input;
 
-    const botCx = bot.x;
-    const botCy = bot.y + PLAYER_CENTER_Y;
+    const bx = bot.x;
+    const by = bot.y + PLAYER_CENTER_Y;
+    const bz = bot.z;
 
-    // 1. Check incoming projectile threat for dodging
+    // 1. Incoming projectile dodge check in 3D
     if (brain.dodgeTimer <= 0 && Math.random() < diff.dodgeChance * dt * 12) {
-      for (let i = 0; i < projectiles.length; i++) {
-        const pr = projectiles[i];
+      for (const pr of projectiles) {
         if (pr.ownerId === bot.id) continue;
-        if (mode === 'team_deathmatch' || mode === 'ctf') {
-          if (pr.team !== 0 && pr.team === bot.team) continue;
+        if ((mode === 'team_deathmatch' || mode === 'ctf') && pr.team !== 0 && pr.team === bot.team) {
+          continue;
         }
-        const dx = botCx - pr.x;
-        const dy = botCy - pr.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq < 49) {
-          const dot = dx * pr.vx + dy * pr.vy;
-          if (dot > 0) {
-            brain.dodgeTimer = 0.42;
-            brain.dodgeDir = dx >= 0 ? 1 : -1;
-            brain.jetPulseTimer = 0.25;
+        const dx = bx - pr.x;
+        const dy = by - pr.y;
+        const dz = bz - pr.z;
+        if (dx * dx + dy * dy + dz * dz < 64) {
+          if (dx * pr.vx + dy * pr.vy + dz * pr.vz > 0) {
+            brain.dodgeTimer = 0.45;
+            brain.dodgeDir = Math.random() > 0.5 ? 1 : -1;
+            brain.jetPulseTimer = 0.28;
             break;
           }
         }
       }
     }
 
-    // 2. Find nearest valid enemy (with line-of-sight preference)
+    // 2. Find best target in 3D
     let bestEnemy: PlayerState | null = null;
-    let bestEnemyScore = Infinity;
-    let bestHasLOS = false;
+    let bestScore = Infinity;
+    let bestLOS = false;
 
-    for (let i = 0; i < allPlayers.length; i++) {
-      const p = allPlayers[i];
+    for (const p of allPlayers) {
       if (!p.alive || p.id === bot.id) continue;
       if ((mode === 'team_deathmatch' || mode === 'ctf' || mode === 'survival') && p.team === bot.team) {
         continue;
       }
-      const dx = p.x - botCx;
-      const dy = p.y + PLAYER_CENTER_Y - botCy;
-      const dist = Math.hypot(dx, dy);
-      const los = hasLineOfSight(botCx, botCy, p.x, p.y + PLAYER_CENTER_Y, map.platforms);
-      const score = dist * (los ? 0.55 : 1.35);
-      if (score < bestEnemyScore) {
-        bestEnemyScore = score;
+      const dist = Math.hypot(p.x - bx, p.y + PLAYER_CENTER_Y - by, p.z - bz);
+      const los = hasLineOfSight3D(bx, by, bz, p.x, p.y + PLAYER_CENTER_Y, p.z, map.platforms);
+      const score = dist * (los ? 0.55 : 1.4);
+      if (score < bestScore) {
+        bestScore = score;
         bestEnemy = p;
-        bestHasLOS = los;
+        bestLOS = los;
       }
     }
 
-    // 3. Weapon selection & pickup awareness
-    const activeWeaponSlot = bot.weapons[bot.activeSlot]!;
-    const activeSpec = WEAPONS[activeWeaponSlot.weaponId];
-    if (activeWeaponSlot.magAmmo === 0 && !bot.reloading) {
-      if (activeWeaponSlot.reserveAmmo > 0) {
-        input.reloadJustPressed = true;
-      } else if (bot.weapons[1]) {
-        input.switchWeaponJustPressed = true;
-      }
+    // 3. Reload / swap / pickup awareness
+    const activeSlot = bot.weapons[bot.activeSlot]!;
+    const activeSpec = WEAPONS[activeSlot.weaponId];
+    if (activeSlot.magAmmo === 0 && !bot.reloading) {
+      if (activeSlot.reserveAmmo > 0) input.reloadJustPressed = true;
+      else if (bot.weapons[1]) input.switchWeaponJustPressed = true;
     }
 
-    // Opportunistic weapon/health pickup check
-    let desiredGoalX = botCx;
-    let desiredGoalY = botCy;
+    let goalX = bx;
+    let goalY = bot.y;
+    let goalZ = bz;
     let hasGoal = false;
 
-    // Low HP -> seek health
     if (bot.health < 55) {
       let bestDist = Infinity;
       for (const pk of pickups) {
         if (!pk.available || pk.kind !== 'health') continue;
-        const d = Math.hypot(pk.x - botCx, pk.y - botCy);
+        const d = Math.hypot(pk.x - bx, pk.y - by, pk.z - bz);
         if (d < bestDist) {
           bestDist = d;
-          desiredGoalX = pk.x;
-          desiredGoalY = pk.y;
+          goalX = pk.x;
+          goalY = pk.y;
+          goalZ = pk.z;
           hasGoal = true;
         }
       }
     }
 
-    // CTF Objective priority
     if (!hasGoal && mode === 'ctf') {
       const myFlag = bot.team === 1 ? flags.team1 : flags.team2;
       const enemyFlag = bot.team === 1 ? flags.team2 : flags.team1;
       if (enemyFlag.carrierId === bot.id) {
-        desiredGoalX = myFlag.homeX;
-        desiredGoalY = myFlag.homeY;
+        goalX = myFlag.homeX;
+        goalY = myFlag.homeY;
+        goalZ = myFlag.homeZ;
         hasGoal = true;
       } else if (!enemyFlag.carrierId) {
-        desiredGoalX = enemyFlag.x;
-        desiredGoalY = enemyFlag.y;
+        goalX = enemyFlag.x;
+        goalY = enemyFlag.y;
+        goalZ = enemyFlag.z;
         hasGoal = true;
       }
     }
 
-    // Weapon upgrade seek if holding starter pistol or low ammo
-    if (!hasGoal && (activeWeaponSlot.weaponId === 'pistol' || activeWeaponSlot.reserveAmmo <= 6)) {
-      let bestDist = 22;
+    if (!hasGoal && (activeSlot.weaponId === 'pistol' || activeSlot.reserveAmmo <= 6)) {
+      let bestDist = 24;
       for (const pk of pickups) {
         if (!pk.available || pk.kind !== 'weapon') continue;
-        if (bot.botDifficulty === 'easy' && (pk.weaponId === 'sniper' || pk.weaponId === 'rocket_launcher')) {
-          continue;
-        }
-        const d = Math.hypot(pk.x - botCx, pk.y - botCy);
+        const d = Math.hypot(pk.x - bx, pk.y - by, pk.z - bz);
         if (d < bestDist) {
           bestDist = d;
-          desiredGoalX = pk.x;
-          desiredGoalY = pk.y;
+          goalX = pk.x;
+          goalY = pk.y;
+          goalZ = pk.z;
           hasGoal = true;
         }
       }
     }
 
-    // Immediate pickup interact if standing on a better weapon
     if (bot.nearbyPickupId) {
       const pk = pickups.find((p) => p.id === bot.nearbyPickupId);
-      if (pk && pk.kind === 'weapon' && pk.weaponId && pk.weaponId !== activeWeaponSlot.weaponId) {
-        if (activeWeaponSlot.weaponId === 'pistol' || !bot.weapons[1]) {
+      if (pk && pk.kind === 'weapon' && pk.weaponId && pk.weaponId !== activeSlot.weaponId) {
+        if (activeSlot.weaponId === 'pistol' || !bot.weapons[1]) {
           input.pickupJustPressed = true;
         }
       }
     }
 
-    // 4. Combat positioning & navigation
     if (!hasGoal && bestEnemy) {
-      const distToEnemy = Math.hypot(bestEnemy.x - botCx, bestEnemy.y - bot.y);
-      const preferredRange = activeSpec.isMelee ? 1.8 : Math.min(activeSpec.effectiveRange * 0.55, 16);
-      if (distToEnemy > preferredRange + 2) {
-        desiredGoalX = bestEnemy.x;
-        desiredGoalY = bestEnemy.y + 1.0;
-        hasGoal = true;
-      } else if (distToEnemy < preferredRange - 5 && !activeSpec.isMelee) {
-        // Backpedal / strafe away
-        desiredGoalX = botCx + (botCx > bestEnemy.x ? 6 : -6);
-        desiredGoalY = bestEnemy.y + 2.5;
-        hasGoal = true;
-      } else {
-        // Strafe around target
-        if (brain.wanderTimer <= 0) {
-          brain.wanderDir = Math.random() > 0.5 ? 1 : -1;
-          brain.wanderTimer = 0.9 + Math.random() * 1.1;
+      goalX = bestEnemy.x;
+      goalY = bestEnemy.y;
+      goalZ = bestEnemy.z;
+      hasGoal = true;
+    }
+
+    // 4. Aiming (Yaw & Pitch) toward enemy or movement goal
+    if (bestEnemy) {
+      const dist = Math.hypot(bestEnemy.x - bx, bestEnemy.y + PLAYER_CENTER_Y - by, bestEnemy.z - bz);
+      const travel = activeSpec.projectileSpeed > 0 ? dist / activeSpec.projectileSpeed : 0;
+      const lx = bestEnemy.x + bestEnemy.vx * travel * diff.leadFactor;
+      const ly = bestEnemy.y + PLAYER_CENTER_Y + bestEnemy.vy * travel * diff.leadFactor * 0.45;
+      const lz = bestEnemy.z + bestEnemy.vz * travel * diff.leadFactor;
+
+      const dx = lx - bx;
+      const dy = ly - by;
+      const dz = lz - bz;
+      const horiz = Math.hypot(dx, dz) || 0.001;
+
+      const jitter = Math.sin(bot.x * 2.1 + bot.z * 3.3 + bestEnemy.x) * 0.5 * diff.aimError;
+      const desiredYaw = Math.atan2(-dx, -dz) + jitter;
+      const desiredPitch = Math.max(-1.2, Math.min(1.2, Math.atan2(dy, horiz)));
+
+      const dYaw = wrapAngle(desiredYaw - bot.aimYaw);
+      const dPitch = desiredPitch - bot.aimPitch;
+      input.aimYaw = wrapAngle(bot.aimYaw + dYaw * Math.min(1, diff.turnSpeed * dt));
+      input.aimPitch = bot.aimPitch + dPitch * Math.min(1, diff.turnSpeed * dt);
+
+      if (bestLOS && dist < activeSpec.effectiveRange + 3 && Math.abs(dYaw) < 0.35) {
+        input.fireHeld = true;
+        input.fireJustPressed = true;
+        if (dist < 2.5 && bot.meleeCooldown <= 0) {
+          input.meleeJustPressed = true;
         }
-        desiredGoalX = botCx + brain.wanderDir * 5;
-        desiredGoalY = bestEnemy.y + 1.5;
-        hasGoal = true;
+      } else if (!bestLOS && dist < 16 && dist > 5 && bot.grenadeCooldown <= 0 && bot.botDifficulty !== 'easy' && Math.random() < dt * 0.5) {
+        input.grenadeJustPressed = true;
       }
+    } else if (hasGoal) {
+      const dx = goalX - bx;
+      const dz = goalZ - bz;
+      if (Math.hypot(dx, dz) > 0.5) {
+        const desiredYaw = Math.atan2(-dx, -dz);
+        const dYaw = wrapAngle(desiredYaw - bot.aimYaw);
+        input.aimYaw = wrapAngle(bot.aimYaw + dYaw * Math.min(1, 5 * dt));
+      }
+      input.aimPitch = bot.aimPitch * (1 - Math.min(1, 5 * dt));
     }
 
-    if (!hasGoal) {
-      if (brain.wanderTimer <= 0) {
-        brain.wanderDir = Math.random() > 0.5 ? 1 : -1;
-        brain.wanderTimer = 1.5 + Math.random() * 2.0;
-      }
-      desiredGoalX = botCx + brain.wanderDir * 8;
-      desiredGoalY = bot.y + 1.5;
+    // 5. Movement relative to input.aimYaw
+    if (brain.wanderTimer <= 0) {
+      brain.strafeDir = Math.random() > 0.5 ? 1 : -1;
+      brain.wanderTimer = 1.1 + Math.random() * 1.4;
     }
 
-    // Apply horizontal movement + wall / void avoidance
     if (brain.dodgeTimer > 0) {
       input.moveX = brain.dodgeDir;
+      input.moveZ = 0.4;
+    } else if (bestEnemy && bestLOS) {
+      const dist = Math.hypot(bestEnemy.x - bx, bestEnemy.z - bz);
+      const pref = activeSpec.isMelee ? 1.5 : Math.min(activeSpec.effectiveRange * 0.45, 14);
+      input.moveZ = dist > pref + 2 ? 1 : dist < pref - 3 ? -0.7 : 0.15;
+      input.moveX = brain.strafeDir * 0.85;
+    } else if (hasGoal) {
+      const dx = goalX - bx;
+      const dz = goalZ - bz;
+      const fwdX = -Math.sin(input.aimYaw);
+      const fwdZ = -Math.cos(input.aimYaw);
+      const rgtX = Math.cos(input.aimYaw);
+      const rgtZ = -Math.sin(input.aimYaw);
+      const d = Math.hypot(dx, dz) || 1;
+      input.moveZ = (dx * fwdX + dz * fwdZ) / d;
+      input.moveX = (dx * rgtX + dz * rgtZ) / d;
     } else {
-      const dxGoal = desiredGoalX - botCx;
-      if (Math.abs(dxGoal) > 0.8) {
-        input.moveX = Math.sign(dxGoal);
-      }
+      input.moveZ = 0.8;
+      input.moveX = brain.strafeDir * 0.3;
     }
 
-    // Keep inside map bounds safely
-    if (bot.x < -map.width * 0.5 + 3) input.moveX = 1;
-    if (bot.x > map.width * 0.5 - 3) input.moveX = -1;
+    // 6. Wall climb & Jetpack vertical flight
+    const fwdX = -Math.sin(input.aimYaw);
+    const fwdZ = -Math.cos(input.aimYaw);
+    const obstacleAhead = !hasLineOfSight3D(
+      bx,
+      by,
+      bz,
+      bx + fwdX * 2.2,
+      by,
+      bz + fwdZ * 2.2,
+      map.platforms
+    );
 
-    // 5. Jetpack & Void/Pit Avoidance
-    const dangerPit = bot.y < map.floorY + 1.5 && map.id === 'skybridge';
-    const wallAhead =
-      input.moveX !== 0 &&
-      !hasLineOfSight(botCx, botCy, botCx + input.moveX * 2.2, botCy, map.platforms);
-
-    if (dangerPit || (bot.y < 1.2 && bot.vy < -5)) {
-      input.jumpHeld = true;
-      input.jumpJustPressed = bot.grounded;
-    } else if (wallAhead) {
+    if (obstacleAhead) {
       if (bot.grounded) {
         input.jumpJustPressed = true;
         input.jumpHeld = true;
-      } else if (bot.fuel > 20) {
+      } else if (bot.fuel > 18) {
         input.jumpHeld = true;
       }
-    } else if (desiredGoalY > bot.y + 2.2 && bot.fuel > 25 * (1.2 - diff.jetSkill * 0.5)) {
+    } else if (goalY > bot.y + 2.0 && bot.fuel > 25 * (1.2 - diff.jetSkill * 0.5)) {
       if (bot.grounded) {
         input.jumpJustPressed = true;
         input.jumpHeld = true;
@@ -287,62 +312,6 @@ export class BotAIController {
       }
     } else if (brain.jetPulseTimer > 0 && bot.fuel > 15) {
       input.jumpHeld = true;
-    } else if (desiredGoalY < bot.y - 3.5 && bot.grounded) {
-      // Drop through one-way platforms
-      input.moveY = -1;
-    }
-
-    // 6. Aiming & Firing
-    if (bestEnemy) {
-      const ex = bestEnemy.x;
-      const ey = bestEnemy.y + PLAYER_CENTER_Y;
-      const dist = Math.hypot(ex - botCx, ey - botCy);
-      const travelTime = activeSpec.projectileSpeed > 0 ? dist / activeSpec.projectileSpeed : 0;
-      const leadX = ex + bestEnemy.vx * travelTime * diff.leadFactor;
-      const leadY = ey + bestEnemy.vy * travelTime * diff.leadFactor * 0.5;
-
-      const rawAngle = Math.atan2(leadY - botCy, leadX - botCx);
-      const jitter = (Math.sin(bot.x * 3.1 + bot.y * 2.7 + bestEnemy.x) * 0.5) * diff.aimError;
-      const desiredAim = rawAngle + jitter;
-
-      // Smooth angular tracking
-      let delta = desiredAim - bot.aimAngle;
-      while (delta > Math.PI) delta -= Math.PI * 2;
-      while (delta < -Math.PI) delta += Math.PI * 2;
-      brain.targetAngle = bot.aimAngle + delta * Math.min(1, diff.reactionSpeed * 60 * dt);
-      input.aimAngle = brain.targetAngle;
-
-      if (bestHasLOS && dist < activeSpec.effectiveRange + 3) {
-        if (Math.abs(delta) < 0.38) {
-          input.fireHeld = true;
-          input.fireJustPressed = true;
-        }
-        if (dist < 2.2 && bot.meleeCooldown <= 0) {
-          input.meleeJustPressed = true;
-        }
-        // Smart grenade throw when enemy is behind cover or clustered
-        if (
-          !bestHasLOS &&
-          dist < 16 &&
-          dist > 5 &&
-          bot.grenadeCooldown <= 0 &&
-          bot.botDifficulty !== 'easy' &&
-          Math.random() < dt * 0.6
-        ) {
-          input.grenadeJustPressed = true;
-        }
-      } else if (
-        !bestHasLOS &&
-        dist < 14 &&
-        dist > 5 &&
-        bot.grenadeCooldown <= 0 &&
-        bot.botDifficulty === 'hard' &&
-        Math.random() < dt * 0.7
-      ) {
-        input.grenadeJustPressed = true;
-      }
-    } else {
-      input.aimAngle = input.moveX < 0 ? Math.PI : 0;
     }
 
     return input;

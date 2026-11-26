@@ -10,9 +10,10 @@ interface Props {
 }
 
 const KEY_LABELS: { key: keyof KeyBindings; label: string }[] = [
-  { key: 'left', label: 'Move Left' },
-  { key: 'right', label: 'Move Right' },
-  { key: 'down', label: 'Drop Through Platform' },
+  { key: 'forward', label: 'Move Forward' },
+  { key: 'backward', label: 'Move Backward' },
+  { key: 'left', label: 'Strafe Left' },
+  { key: 'right', label: 'Strafe Right' },
   { key: 'jump', label: 'Jump / Hold Jetpack' },
   { key: 'reload', label: 'Reload' },
   { key: 'pickup', label: 'Pick Up Weapon' },
